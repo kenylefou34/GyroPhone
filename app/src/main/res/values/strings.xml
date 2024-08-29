@@ -11,4 +11,5 @@
     <string name="take_photo">Take a photo</string>
     <string name="start_capture">Start capture</string>
     <string name="stop_capture">Stop capture</string>
+    <string name="switch_camera">Switch Camera</string>
 </resources>

@@ -10,6 +10,7 @@ import android.hardware.SensorManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.util.Range
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
@@ -26,6 +27,7 @@ import com.example.gyro.databinding.ActivityMainBinding
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+
 
 private const val MAIN_CODE_PERMISSIONS = 100
 private val REQUIRED_PERMISSIONS =
@@ -72,6 +74,7 @@ class MainActivity : AppCompatActivity() {
 
     private val initialGravity = floatArrayOf(0f, 0f, 0f)
     private var resetGravity = true
+    private var isFrontCameraActive = false
 
     /* METHODS */
     override fun onRequestPermissionsResult(
@@ -268,34 +271,48 @@ class MainActivity : AppCompatActivity() {
 
     private fun startCamera() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+        val lifecycleOwner = this
 
         cameraProviderFuture.addListener({
             // Used to bind the lifecycle of cameras to the lifecycle owner
             val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
 
-            // Preview
-            val preview = Preview.Builder()
-                .build()
-                .also {
-                    it.setSurfaceProvider(viewBinding.viewFinder.surfaceProvider)
+            // Setting preview camera
+            val previewBuilder = Preview.Builder()
+            // Manage Frame Rate
+            previewBuilder.setTargetFrameRate(Range(15,25))
+
+            val preview = previewBuilder.build().also {
+                    it.setSurfaceProvider(viewBinding.viewCamera.surfaceProvider)
                 }
 
             // Select back camera as a default
-            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+            val cameraSelectorBack = CameraSelector.DEFAULT_BACK_CAMERA
+            val cameraSelectorFront = CameraSelector.DEFAULT_FRONT_CAMERA
 
             try {
                 // Unbind use cases before rebinding
                 cameraProvider.unbindAll()
-
-                // Bind use cases to camera
                 cameraProvider.bindToLifecycle(
-                    this, cameraSelector, preview)
+                    lifecycleOwner, cameraSelectorBack, preview)
+                isFrontCameraActive = false
 
+                val switchButton: Button = findViewById(R.id.switchCamera)
+                switchButton.setOnClickListener {
+                    cameraProvider.unbindAll()
+                    if (isFrontCameraActive) {
+                        cameraProvider.bindToLifecycle(
+                            lifecycleOwner, cameraSelectorBack, preview)
+                    }
+                    else {
+                        cameraProvider.bindToLifecycle(
+                            lifecycleOwner, cameraSelectorFront, preview)
+                    }
+                    isFrontCameraActive = !isFrontCameraActive
+                }
             } catch(exc: Exception) {
                 Log.e(TAG, "Use case binding failed", exc)
             }
-
         }, ContextCompat.getMainExecutor(this))
-
     }
 }

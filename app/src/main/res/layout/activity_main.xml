@@ -8,163 +8,170 @@
     tools:context=".MainActivity">
 
     <androidx.camera.view.PreviewView
-        android:id="@+id/viewFinder"
+        android:id="@+id/view_camera"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
     <LinearLayout
-        android:layout_width="wrap_content"
-        android:layout_height="fill_parent"
-        android:layout_marginStart="32dp"
-        android:layout_marginTop="32dp"
-        android:layout_marginEnd="32dp"
-        android:layout_marginBottom="32dp"
-        android:orientation="vertical"
-        android:gravity="start"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent">
-
-        <Button
-            android:id="@+id/buttonRazSensors"
-            android:layout_width="fill_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="16dp"
-            android:text="@string/raz" />
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="horizontal">
 
         <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_margin="8dp"
-            android:orientation="horizontal">
+            android:layout_width="wrap_content"
+            android:layout_height="fill_parent"
+            android:gravity="end"
+            android:orientation="vertical">
 
-            <TextView
-                android:id="@+id/textViewMin"
-                android:layout_width="wrap_content"
+            <Button
+                android:id="@+id/buttonRazSensors"
+                android:layout_width="fill_parent"
                 android:layout_height="wrap_content"
-                android:ems="6"
-                android:text="@string/min"
-                android:gravity="start"
-                android:textAlignment="textStart" />
+                android:layout_marginBottom="16dp"
+                android:text="@string/raz" />
 
-            <TextView
-                android:id="@+id/textViewCurrent"
-                android:layout_width="wrap_content"
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:ems="6"
-                android:text="@string/current"
-                android:textAlignment="center" />
+                android:layout_margin="8dp"
+                android:orientation="horizontal">
 
-            <TextView
-                android:id="@+id/textViewMax"
-                android:layout_width="wrap_content"
+                <TextView
+                    android:id="@+id/textViewMin"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:ems="6"
+                    android:gravity="start"
+                    android:text="@string/min"
+                    android:textAlignment="textStart" />
+
+                <TextView
+                    android:id="@+id/textViewCurrent"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:ems="6"
+                    android:text="@string/current"
+                    android:textAlignment="center" />
+
+                <TextView
+                    android:id="@+id/textViewMax"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:ems="6"
+                    android:gravity="end"
+                    android:text="@string/max"
+                    android:textAlignment="textEnd" />
+
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:ems="6"
-                android:text="@string/max"
-                android:gravity="end"
-                android:textAlignment="textEnd" />
+                android:layout_margin="8dp"
+                android:orientation="horizontal">
 
-        </LinearLayout>
+                <TextView
+                    android:id="@+id/textViewMinX"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:ems="6"
+                    android:gravity="start"
+                    android:text="@string/zero"
+                    android:textAlignment="textStart" />
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_margin="8dp"
-            android:orientation="horizontal">
+                <TextView
+                    android:id="@+id/textViewX"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:ems="6"
+                    android:text="@string/zero"
+                    android:textAlignment="center" />
 
-            <TextView
-                android:id="@+id/textViewMinX"
-                android:layout_width="wrap_content"
+                <TextView
+                    android:id="@+id/textViewMaxX"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:ems="6"
+                    android:gravity="end"
+                    android:text="@string/zero"
+                    android:textAlignment="textEnd" />
+
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:ems="6"
-                android:text="@string/zero"
-                android:gravity="start"
-                android:textAlignment="textStart" />
+                android:layout_margin="8dp"
+                android:orientation="horizontal">
 
-            <TextView
-                android:id="@+id/textViewX"
-                android:layout_width="wrap_content"
+                <TextView
+                    android:id="@+id/textViewMinY"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:ems="6"
+                    android:gravity="start"
+                    android:text="@string/zero"
+                    android:textAlignment="textStart" />
+
+                <TextView
+                    android:id="@+id/textViewY"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:ems="6"
+                    android:text="@string/zero"
+                    android:textAlignment="center" />
+
+                <TextView
+                    android:id="@+id/textViewMaxY"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:ems="6"
+                    android:gravity="end"
+                    android:text="@string/zero"
+                    android:textAlignment="textEnd" />
+
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:ems="6"
-                android:text="@string/zero"
-                android:textAlignment="center" />
+                android:layout_margin="8dp"
+                android:orientation="horizontal">
 
-            <TextView
-                android:id="@+id/textViewMaxX"
-                android:layout_width="wrap_content"
+                <TextView
+                    android:id="@+id/textViewMinZ"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:ems="6"
+                    android:gravity="start"
+                    android:text="@string/zero"
+                    android:textAlignment="textStart" />
+
+                <TextView
+                    android:id="@+id/textViewZ"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:ems="6"
+                    android:text="@string/zero"
+                    android:textAlignment="center" />
+
+                <TextView
+                    android:id="@+id/textViewMaxZ"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:ems="6"
+                    android:gravity="end"
+                    android:text="@string/zero"
+                    android:textAlignment="textEnd" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/switchCamera"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:ems="6"
-                android:text="@string/zero"
-                android:gravity="end"
-                android:textAlignment="textEnd" />
+                android:layout_marginTop="16dp"
+                android:text="@string/switch_camera" />
 
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_margin="8dp"
-            android:orientation="horizontal">
-
-            <TextView
-                android:id="@+id/textViewMinY"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:ems="6"
-                android:text="@string/zero"
-                android:gravity="start"
-                android:textAlignment="textStart" />
-
-            <TextView
-                android:id="@+id/textViewY"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:ems="6"
-                android:text="@string/zero"
-                android:textAlignment="center" />
-
-            <TextView
-                android:id="@+id/textViewMaxY"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:ems="6"
-                android:text="@string/zero"
-                android:gravity="end"
-                android:textAlignment="textEnd" />
-
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_margin="8dp"
-            android:orientation="horizontal">
-
-            <TextView
-                android:id="@+id/textViewMinZ"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:ems="6"
-                android:text="@string/zero"
-                android:gravity="start"
-                android:textAlignment="textStart" />
-
-            <TextView
-                android:id="@+id/textViewZ"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:ems="6"
-                android:text="@string/zero"
-                android:textAlignment="center" />
-
-            <TextView
-                android:id="@+id/textViewMaxZ"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:ems="6"
-                android:text="@string/zero"
-                android:gravity="end"
-                android:textAlignment="textEnd" />
         </LinearLayout>
 
     </LinearLayout>
