@@ -1,6 +1,9 @@
 <resources>
     <string name="app_name">Gyro</string>
     <string name="zero">0.0</string>
+    <string name="min">MIN</string>
+    <string name="current">CURRENT</string>
+    <string name="max">MAX</string>
     <string name="raz">RAZ</string>
     <string name="title_activity_fullscreen_camera">FullscreenActivityCamera</string>
     <string name="open_camera">Open camera</string>
