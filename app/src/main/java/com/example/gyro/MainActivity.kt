@@ -2,12 +2,12 @@ package com.example.gyro
 
 import android.Manifest
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.widget.Button
@@ -15,11 +15,17 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import com.example.gyro.databinding.ActivityMainBinding
 import java.util.Locale
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 private const val MAIN_CODE_PERMISSIONS = 100
 private val REQUIRED_PERMISSIONS =
@@ -40,6 +46,12 @@ private fun allPermissionsGranted(context: Context) = REQUIRED_PERMISSIONS.all {
 }
 
 class MainActivity : AppCompatActivity() {
+    /* CAMERA STUFFS */
+    private lateinit var viewBinding: ActivityMainBinding
+
+    private lateinit var cameraExecutor: ExecutorService
+
+    /* SENSORS STUFFS */
     private lateinit var sensorManager: SensorManager
     private lateinit var accelerometerSensor: Sensor
 
@@ -61,6 +73,7 @@ class MainActivity : AppCompatActivity() {
     private val initialGravity = floatArrayOf(0f, 0f, 0f)
     private var resetGravity = true
 
+    /* METHODS */
     override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions: Array<String>,
@@ -181,7 +194,9 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        setContentView(R.layout.activity_main)
+        viewBinding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(viewBinding.root)
+
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main)) { v, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
@@ -214,7 +229,10 @@ class MainActivity : AppCompatActivity() {
                 MAIN_CODE_PERMISSIONS
             )
         } else {
-            // Permission already granted, proceed with camera usage
+            Toast.makeText(applicationContext,
+                "Permission succeeded !", Toast.LENGTH_SHORT).show()
+
+            // Permission already granted, proceed with sensors usage
             sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
             accelerometerSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) as Sensor
             sensorManager.registerListener(
@@ -222,6 +240,63 @@ class MainActivity : AppCompatActivity() {
                 accelerometerSensor,
                 20000 /*SensorManager.SENSOR_DELAY_GAME*/
             )
+
+            // Permission already granted, proceed with camera usage
+            cameraExecutor = Executors.newSingleThreadExecutor()
+
+            startCamera()
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        cameraExecutor.shutdown()
+    }
+
+    companion object {
+        private const val TAG = "CameraXApp"
+        private const val FILENAME_FORMAT = "yyyy-MM-dd-HH-mm-ss-SSS"
+        private val REQUIRED_PERMISSIONS =
+            mutableListOf (
+                Manifest.permission.CAMERA,
+                Manifest.permission.RECORD_AUDIO
+            ).apply {
+                if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+                    add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                }
+            }.toTypedArray()
+    }
+
+    private fun startCamera() {
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+
+        cameraProviderFuture.addListener({
+            // Used to bind the lifecycle of cameras to the lifecycle owner
+            val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
+
+            // Preview
+            val preview = Preview.Builder()
+                .build()
+                .also {
+                    it.setSurfaceProvider(viewBinding.viewFinder.surfaceProvider)
+                }
+
+            // Select back camera as a default
+            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+
+            try {
+                // Unbind use cases before rebinding
+                cameraProvider.unbindAll()
+
+                // Bind use cases to camera
+                cameraProvider.bindToLifecycle(
+                    this, cameraSelector, preview)
+
+            } catch(exc: Exception) {
+                Log.e(TAG, "Use case binding failed", exc)
+            }
+
+        }, ContextCompat.getMainExecutor(this))
+
     }
 }
