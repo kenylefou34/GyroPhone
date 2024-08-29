@@ -24,12 +24,6 @@
         android:theme="@style/Theme.Gyro"
         tools:targetApi="31" >
         <activity
-            android:name=".FullscreenActivityCamera"
-            android:configChanges="orientation|keyboardHidden|screenSize"
-            android:exported="false"
-            android:label="@string/title_activity_fullscreen_camera"
-            android:theme="@style/Theme.Gyro.Fullscreen" />
-        <activity
             android:name=".MainActivity"
             android:exported="true" >
             <intent-filter>
