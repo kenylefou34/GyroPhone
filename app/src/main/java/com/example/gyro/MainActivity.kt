@@ -3,6 +3,10 @@ package com.example.gyro
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Rect
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -11,12 +15,16 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.util.Range
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.ActivityCompat
@@ -24,6 +32,9 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.example.gyro.databinding.ActivityMainBinding
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -52,6 +63,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var viewBinding: ActivityMainBinding
 
     private lateinit var cameraExecutor: ExecutorService
+
+    private lateinit var surfaceJPEG: SurfaceView
+    private lateinit var surfaceJpegHolder: SurfaceHolder
 
     /* SENSORS STUFFS */
     private lateinit var sensorManager: SensorManager
@@ -223,6 +237,23 @@ class MainActivity : AppCompatActivity() {
             resetGravity = true
         }
 
+        surfaceJPEG = findViewById<SurfaceView>(R.id.surfaceJPEG)
+        surfaceJpegHolder = surfaceJPEG.holder
+
+        surfaceJpegHolder.addCallback(object : SurfaceHolder.Callback {
+            override fun surfaceCreated(holder: SurfaceHolder) {
+                // Surface is created and ready to draw
+            }
+
+            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                // Handle changes
+            }
+
+            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                // Surface is destroyed
+            }
+        })
+
         // Check all permissions granted
         if (!allPermissionsGranted(applicationContext)) {
             // Permission is not granted, request it
@@ -277,6 +308,8 @@ class MainActivity : AppCompatActivity() {
             // Used to bind the lifecycle of cameras to the lifecycle owner
             val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
 
+            bindPreview(cameraProvider)
+
             // Setting preview camera
             val previewBuilder = Preview.Builder()
             // Manage Frame Rate
@@ -314,5 +347,53 @@ class MainActivity : AppCompatActivity() {
                 Log.e(TAG, "Use case binding failed", exc)
             }
         }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun bindPreview(cameraProvider: ProcessCameraProvider) {
+        val imageAnalysis = ImageAnalysis.Builder()
+            // .setTargetResolution(Size(1280, 720))
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .build()
+
+        imageAnalysis.setAnalyzer(
+            Executors.newSingleThreadExecutor(), ImageAnalysis.Analyzer { imageProxy: ImageProxy ->
+                // Convert image to a suitable format (JPEG/Bitmap)
+                val buffer = imageProxy.planes[0].buffer
+                val bytes = ByteArray(buffer.remaining())
+                buffer.get(bytes)
+
+                // Display to surface
+                drawBitmapOnSurfaceView(byteArrayToBitmap(bytes))
+
+                // Pass bytes to the network streaming function
+                sendFrameOverNetwork(bytes)
+
+                imageProxy.close()
+        })
+    }
+
+    private fun byteArrayToBitmap(byteArray: ByteArray): Bitmap {
+        return BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size)
+    }
+
+    private fun drawBitmapOnSurfaceView(bitmap: Bitmap) {
+        val canvas: Canvas = surfaceJpegHolder.lockCanvas()
+        canvas.drawBitmap(bitmap, null, Rect(0, 0, surfaceJPEG.width, surfaceJPEG.height), null)
+        surfaceJpegHolder.unlockCanvasAndPost(canvas)
+    }
+
+    private fun sendFrameOverNetwork(frame: ByteArray) {
+        val thread = Thread {
+            try {
+                val socket = DatagramSocket()
+                val address = InetAddress.getByName("192.168.1.100") // IP of the machine running VLC
+                val packet = DatagramPacket(frame, frame.size, address, 60606) // Port on which VLC will listen
+                socket.send(packet)
+                socket.close()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        thread.start()
     }
 }

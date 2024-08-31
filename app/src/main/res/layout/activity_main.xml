@@ -171,6 +171,11 @@
                 android:layout_marginTop="16dp"
                 android:text="@string/switch_camera" />
 
+            <SurfaceView
+                android:id="@+id/surfaceJPEG"
+                android:layout_width="match_parent"
+                android:layout_height="fill_parent" />
+
         </LinearLayout>
 
     </LinearLayout>
