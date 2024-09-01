@@ -26,6 +26,7 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.impl.UseCaseConfigFactory
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -35,6 +36,7 @@ import com.example.gyro.databinding.ActivityMainBinding
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.NetworkInterface
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -45,6 +47,7 @@ private val REQUIRED_PERMISSIONS =
     arrayOf(
         Manifest.permission.ACCESS_WIFI_STATE,
         Manifest.permission.CHANGE_WIFI_STATE,
+        Manifest.permission.INTERNET,
         Manifest.permission.CAMERA)
 
 const val TAG: String = "GyroMainActivity"
@@ -83,12 +86,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var viewTextViewMaxY : TextView
     private lateinit var viewTextViewMaxZ : TextView
 
+    private lateinit var textViewError : TextView
+
     private var minValues = floatArrayOf(Float.MAX_VALUE, Float.MAX_VALUE, Float.MAX_VALUE)
     private var maxValues = floatArrayOf(Float.MIN_VALUE, Float.MIN_VALUE, Float.MIN_VALUE)
 
     private val initialGravity = floatArrayOf(0f, 0f, 0f)
     private var resetGravity = true
     private var isFrontCameraActive = false
+    private var isDisplayEnabled = false
 
     /* METHODS */
     override fun onRequestPermissionsResult(
@@ -194,17 +200,21 @@ class MainActivity : AppCompatActivity() {
     // In onResume() method of your Activity or Fragment:
     override fun onResume() {
         super.onResume()
-        sensorManager.registerListener(
-            sensorListener,
-            accelerometerSensor,
-            25000 /*SensorManager.SENSOR_DELAY_GAME*/
-        )
+        if(allPermissionsGranted(applicationContext)) {
+            sensorManager.registerListener(
+                sensorListener,
+                accelerometerSensor,
+                25000 /*SensorManager.SENSOR_DELAY_GAME*/
+            )
+        }
     }
 
     // In onPause() method:
     override fun onPause() {
         super.onPause()
-        sensorManager.unregisterListener(sensorListener)
+        if(allPermissionsGranted(applicationContext)) {
+            sensorManager.unregisterListener(sensorListener)
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -231,6 +241,8 @@ class MainActivity : AppCompatActivity() {
         viewTextViewMaxX = findViewById(R.id.textViewMaxX)
         viewTextViewMaxY = findViewById(R.id.textViewMaxY)
         viewTextViewMaxZ = findViewById(R.id.textViewMaxZ)
+
+        textViewError = findViewById(R.id.textViewError)
 
         val buttonRazSensors = findViewById<Button>(R.id.buttonRazSensors)
         buttonRazSensors.setOnClickListener {
@@ -275,11 +287,39 @@ class MainActivity : AppCompatActivity() {
                 20000 /*SensorManager.SENSOR_DELAY_GAME*/
             )
 
+            val ip = getLocalIpAddress()
+            val ipAddressText = findViewById<TextView>(R.id.textViewIpAddress)
+            ipAddressText.text = ip
+
             // Permission already granted, proceed with camera usage
             cameraExecutor = Executors.newSingleThreadExecutor()
 
             startCamera()
         }
+    }
+
+    private fun getLocalIpAddress(): String? {
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces()
+            for (networkInterface in interfaces) {
+                val addresses = networkInterface.inetAddresses
+                for (address in addresses) {
+                    if (!address.isLoopbackAddress && address is InetAddress) {
+                        // Return the IPv4 address if available
+                        val hostAddress = address.hostAddress
+                        if (hostAddress != null) {
+                            if (hostAddress.indexOf(':') < 0) {
+                                return hostAddress
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            textViewError.text = e.message
+        }
+        return null
     }
 
     override fun onDestroy() {
@@ -302,54 +342,70 @@ class MainActivity : AppCompatActivity() {
 
     private fun startCamera() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
-        val lifecycleOwner = this
 
         cameraProviderFuture.addListener({
             // Used to bind the lifecycle of cameras to the lifecycle owner
             val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
-
-            bindPreview(cameraProvider)
 
             // Setting preview camera
             val previewBuilder = Preview.Builder()
             // Manage Frame Rate
             previewBuilder.setTargetFrameRate(Range(15,25))
 
-            val preview = previewBuilder.build().also {
-                    it.setSurfaceProvider(viewBinding.viewCamera.surfaceProvider)
-                }
-
-            // Select back camera as a default
-            val cameraSelectorBack = CameraSelector.DEFAULT_BACK_CAMERA
-            val cameraSelectorFront = CameraSelector.DEFAULT_FRONT_CAMERA
-
             try {
-                // Unbind use cases before rebinding
-                cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
-                    lifecycleOwner, cameraSelectorBack, preview)
-                isFrontCameraActive = false
+
+                bindPreviewImage(cameraProvider)
+
+                val displayCameraButton: Button = findViewById(R.id.enableCameraDisplay)
+                displayCameraButton.setOnClickListener {
+                    if (isDisplayEnabled) {
+                        Toast.makeText(applicationContext, "Enable display", Toast.LENGTH_SHORT).show()
+                        displayFrontOrBackCamera(cameraProvider, previewBuilder)
+                    }
+                    else {
+                        Toast.makeText(applicationContext, "Sending images", Toast.LENGTH_SHORT).show()
+                        bindPreviewImage(cameraProvider)
+                    }
+                    isDisplayEnabled = !isDisplayEnabled
+                }
 
                 val switchButton: Button = findViewById(R.id.switchCamera)
                 switchButton.setOnClickListener {
-                    cameraProvider.unbindAll()
-                    if (isFrontCameraActive) {
-                        cameraProvider.bindToLifecycle(
-                            lifecycleOwner, cameraSelectorBack, preview)
-                    }
-                    else {
-                        cameraProvider.bindToLifecycle(
-                            lifecycleOwner, cameraSelectorFront, preview)
-                    }
                     isFrontCameraActive = !isFrontCameraActive
+                    if (isDisplayEnabled) {
+                        displayFrontOrBackCamera(cameraProvider, previewBuilder)
+                    }
                 }
+
             } catch(exc: Exception) {
                 Log.e(TAG, "Use case binding failed", exc)
             }
         }, ContextCompat.getMainExecutor(this))
     }
 
-    private fun bindPreview(cameraProvider: ProcessCameraProvider) {
+    private fun displayFrontOrBackCamera(cameraProvider: ProcessCameraProvider, previewBuilder: Preview.Builder)  {
+        cameraProvider.unbindAll()
+        // Select back camera as a default
+        val cameraSelectorBack = CameraSelector.DEFAULT_BACK_CAMERA
+        val cameraSelectorFront = CameraSelector.DEFAULT_FRONT_CAMERA
+
+        val preview = previewBuilder.build().also {
+            it.setSurfaceProvider(viewBinding.viewCamera.surfaceProvider)
+        }
+
+        if (isFrontCameraActive) {
+            cameraProvider.bindToLifecycle(this, cameraSelectorBack, preview)
+        }
+        else {
+            cameraProvider.bindToLifecycle(
+                this, cameraSelectorFront, preview)
+        }
+    }
+
+    private fun bindPreviewImage(cameraProvider: ProcessCameraProvider) {
+        // Unbind use cases before rebinding
+        cameraProvider.unbindAll()
+
         val imageAnalysis = ImageAnalysis.Builder()
             // .setTargetResolution(Size(1280, 720))
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
@@ -357,43 +413,72 @@ class MainActivity : AppCompatActivity() {
 
         imageAnalysis.setAnalyzer(
             Executors.newSingleThreadExecutor(), ImageAnalysis.Analyzer { imageProxy: ImageProxy ->
+                textViewError.text = buildString {
+                    append(imageProxy.width.toString())
+                    append("x")
+                    append(imageProxy.height.toString())
+                }
+
                 // Convert image to a suitable format (JPEG/Bitmap)
                 val buffer = imageProxy.planes[0].buffer
                 val bytes = ByteArray(buffer.remaining())
                 buffer.get(bytes)
 
                 // Display to surface
-                drawBitmapOnSurfaceView(byteArrayToBitmap(bytes))
+                // drawBitmapOnSurfaceView(byteArrayToBitmap(bytes))
 
                 // Pass bytes to the network streaming function
                 sendFrameOverNetwork(bytes)
 
                 imageProxy.close()
         })
+
+        // Select back camera as a default
+        val cameraSelector =
+            if (isFrontCameraActive) CameraSelector.DEFAULT_FRONT_CAMERA
+            else CameraSelector.DEFAULT_BACK_CAMERA
+
+        // Bind the ImageAnalysis use case
+        cameraProvider.bindToLifecycle(this, cameraSelector, imageAnalysis)
     }
 
-    private fun byteArrayToBitmap(byteArray: ByteArray): Bitmap {
+    private fun byteArrayToBitmap(byteArray: ByteArray?): Bitmap? {
+        if (byteArray == null) {
+            Log.e("MainActivity", "Byte array is null, cannot decode to bitmap")
+            return null // Or handle the null case differently
+        }
         return BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size)
     }
 
-    private fun drawBitmapOnSurfaceView(bitmap: Bitmap) {
-        val canvas: Canvas = surfaceJpegHolder.lockCanvas()
-        canvas.drawBitmap(bitmap, null, Rect(0, 0, surfaceJPEG.width, surfaceJPEG.height), null)
-        surfaceJpegHolder.unlockCanvasAndPost(canvas)
+    private fun drawBitmapOnSurfaceView(bitmap: Bitmap?) {
+        if (bitmap != null) {
+            val canvas: Canvas = surfaceJpegHolder.lockCanvas()
+            canvas.drawBitmap(bitmap, null, Rect(0, 0, surfaceJPEG.width, surfaceJPEG.height), null)
+            surfaceJpegHolder.unlockCanvasAndPost(canvas)
+        }
     }
 
     private fun sendFrameOverNetwork(frame: ByteArray) {
-        val thread = Thread {
+        Thread {
             try {
                 val socket = DatagramSocket()
-                val address = InetAddress.getByName("192.168.1.100") // IP of the machine running VLC
-                val packet = DatagramPacket(frame, frame.size, address, 60606) // Port on which VLC will listen
-                socket.send(packet)
+                var curOffset = 0
+                while (curOffset < frame.size) {
+                    val packet = DatagramPacket(
+                        frame,
+                        curOffset,
+                        512,
+                        InetAddress.getByName("192.168.1.100"), // IP of the machine running VLC
+                        50000 // Port on which VLC will listen
+                    )
+                    socket.send(packet)
+                    curOffset += 512
+                }
                 socket.close()
             } catch (e: Exception) {
                 e.printStackTrace()
+                textViewError.text = e.message
             }
-        }
-        thread.start()
+        }.start()
     }
 }

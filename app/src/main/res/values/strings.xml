@@ -1,6 +1,8 @@
 <resources>
     <string name="app_name">Gyro</string>
+    <string name="empty">Empty</string>
     <string name="zero">0.0</string>
+    <string name="zero_ip">0.0.0.0</string>
     <string name="min">MIN</string>
     <string name="current">CURRENT</string>
     <string name="max">MAX</string>
@@ -12,4 +14,5 @@
     <string name="start_capture">Start capture</string>
     <string name="stop_capture">Stop capture</string>
     <string name="switch_camera">Switch Camera</string>
+    <string name="display_camera">Display/Hide Preview</string>
 </resources>

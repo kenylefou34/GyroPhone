@@ -26,7 +26,7 @@
                 android:id="@+id/buttonRazSensors"
                 android:layout_width="fill_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginBottom="16dp"
+                android:layout_marginBottom="8dp"
                 android:text="@string/raz" />
 
             <LinearLayout
@@ -168,13 +168,47 @@
                 android:id="@+id/switchCamera"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
+                android:layout_marginTop="8dp"
                 android:text="@string/switch_camera" />
+
+            <Button
+                android:id="@+id/enableCameraDisplay"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/display_camera" />
+
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="fill_parent"
+            android:layout_height="fill_parent"
+            android:layout_margin="8dp"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/textViewIpAddress"
+                android:layout_width="fill_parent"
+                android:layout_height="wrap_content"
+                android:layout_margin="4dp"
+                android:ems="6"
+                android:text="@string/zero_ip"
+                android:textAlignment="textStart" />
+
+            <TextView
+                android:id="@+id/textViewError"
+                android:layout_width="fill_parent"
+                android:layout_height="wrap_content"
+                android:layout_margin="4dp"
+                android:ems="6"
+                android:text="@string/empty"
+                android:textAlignment="textStart" />
 
             <SurfaceView
                 android:id="@+id/surfaceJPEG"
                 android:layout_width="match_parent"
-                android:layout_height="fill_parent" />
+                android:layout_height="match_parent" />
+
 
         </LinearLayout>
 
