@@ -204,11 +204,14 @@
                 android:text="@string/empty"
                 android:textAlignment="textStart" />
 
-            <SurfaceView
-                android:id="@+id/surfaceJPEG"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent" />
-
+            <TextView
+                android:id="@+id/textViewInfo"
+                android:layout_width="fill_parent"
+                android:layout_height="wrap_content"
+                android:layout_margin="4dp"
+                android:ems="6"
+                android:text="@string/empty"
+                android:textAlignment="textStart" />
 
         </LinearLayout>
 

@@ -3,30 +3,26 @@ package com.example.gyro
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Canvas
-import android.graphics.Rect
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.media.Image
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.util.Range
-import android.view.SurfaceHolder
-import android.view.SurfaceView
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
+import androidx.annotation.OptIn
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
-import androidx.camera.core.impl.UseCaseConfigFactory
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -37,10 +33,11 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.NetworkInterface
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-
 
 private const val MAIN_CODE_PERMISSIONS = 100
 private val REQUIRED_PERMISSIONS =
@@ -67,9 +64,6 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var cameraExecutor: ExecutorService
 
-    private lateinit var surfaceJPEG: SurfaceView
-    private lateinit var surfaceJpegHolder: SurfaceHolder
-
     /* SENSORS STUFFS */
     private lateinit var sensorManager: SensorManager
     private lateinit var accelerometerSensor: Sensor
@@ -86,7 +80,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var viewTextViewMaxY : TextView
     private lateinit var viewTextViewMaxZ : TextView
 
+    private var socketFrameBytes : DatagramSocket? = null
+    private val udpReceiver = UdpReceiver
+
     private lateinit var textViewError : TextView
+    private lateinit var textViewInfo : TextView
 
     private var minValues = floatArrayOf(Float.MAX_VALUE, Float.MAX_VALUE, Float.MAX_VALUE)
     private var maxValues = floatArrayOf(Float.MIN_VALUE, Float.MIN_VALUE, Float.MIN_VALUE)
@@ -95,6 +93,8 @@ class MainActivity : AppCompatActivity() {
     private var resetGravity = true
     private var isFrontCameraActive = false
     private var isDisplayEnabled = false
+
+    private var frameCount = 0 // limited to 65535 - 2 octets
 
     /* METHODS */
     override fun onRequestPermissionsResult(
@@ -192,15 +192,15 @@ class MainActivity : AppCompatActivity() {
            }
         }
 
-        override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {
-            // Handle accuracy changes if needed
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
+            // TODO("Not yet implemented")
         }
     }
 
     // In onResume() method of your Activity or Fragment:
     override fun onResume() {
         super.onResume()
-        if(allPermissionsGranted(applicationContext)) {
+        if (allPermissionsGranted(applicationContext)) {
             sensorManager.registerListener(
                 sensorListener,
                 accelerometerSensor,
@@ -215,6 +215,10 @@ class MainActivity : AppCompatActivity() {
         if(allPermissionsGranted(applicationContext)) {
             sensorManager.unregisterListener(sensorListener)
         }
+        socketFrameBytes?.close()
+        socketFrameBytes = null
+
+        udpReceiver.close()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -243,28 +247,12 @@ class MainActivity : AppCompatActivity() {
         viewTextViewMaxZ = findViewById(R.id.textViewMaxZ)
 
         textViewError = findViewById(R.id.textViewError)
+        textViewInfo  = findViewById(R.id.textViewInfo)
 
         val buttonRazSensors = findViewById<Button>(R.id.buttonRazSensors)
         buttonRazSensors.setOnClickListener {
             resetGravity = true
         }
-
-        surfaceJPEG = findViewById<SurfaceView>(R.id.surfaceJPEG)
-        surfaceJpegHolder = surfaceJPEG.holder
-
-        surfaceJpegHolder.addCallback(object : SurfaceHolder.Callback {
-            override fun surfaceCreated(holder: SurfaceHolder) {
-                // Surface is created and ready to draw
-            }
-
-            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-                // Handle changes
-            }
-
-            override fun surfaceDestroyed(holder: SurfaceHolder) {
-                // Surface is destroyed
-            }
-        })
 
         // Check all permissions granted
         if (!allPermissionsGranted(applicationContext)) {
@@ -324,6 +312,11 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        socketFrameBytes?.close()
+        socketFrameBytes = null
+
+        udpReceiver.close()
+
         cameraExecutor.shutdown()
     }
 
@@ -350,7 +343,7 @@ class MainActivity : AppCompatActivity() {
             // Setting preview camera
             val previewBuilder = Preview.Builder()
             // Manage Frame Rate
-            previewBuilder.setTargetFrameRate(Range(15,25))
+            previewBuilder.setTargetFrameRate(Range(20,25))
 
             try {
 
@@ -402,12 +395,38 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    @OptIn(ExperimentalGetImage::class)
+    private fun imageProxyToNv21(imageProxy: ImageProxy): ByteArray? {
+        val image = imageProxy.image ?: return null
+
+        // Convert the YUV_420_888 Image to NV21 format
+        return yuvToNv21(image)
+    }
+
+    // Converts YUV_420_888 image to NV21 format byte array
+    private fun yuvToNv21(image: Image): ByteArray {
+        val yBuffer: ByteBuffer = image.planes[0].buffer // Y
+        val uBuffer: ByteBuffer = image.planes[1].buffer // U
+        val vBuffer: ByteBuffer = image.planes[2].buffer // V
+
+        val ySize = yBuffer.remaining()
+        val uSize = uBuffer.remaining()
+        val vSize = vBuffer.remaining()
+
+        val nv21 = ByteArray(ySize + uSize + vSize)
+
+        yBuffer.get(nv21, 0, ySize)
+        vBuffer.get(nv21, ySize, vSize)
+        uBuffer.get(nv21, ySize + vSize, uSize)
+
+        return nv21
+    }
+
     private fun bindPreviewImage(cameraProvider: ProcessCameraProvider) {
         // Unbind use cases before rebinding
         cameraProvider.unbindAll()
 
         val imageAnalysis = ImageAnalysis.Builder()
-            // .setTargetResolution(Size(1280, 720))
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
 
@@ -419,18 +438,21 @@ class MainActivity : AppCompatActivity() {
                     append(imageProxy.height.toString())
                 }
 
-                // Convert image to a suitable format (JPEG/Bitmap)
-                val buffer = imageProxy.planes[0].buffer
-                val bytes = ByteArray(buffer.remaining())
-                buffer.get(bytes)
+                // Convert ImageProxy to NV21 ByteArray (YUV data)
+                val yuvBytes = imageProxyToNv21(imageProxy)
+                if (yuvBytes != null) {
+                    sendUdpFramePackets(yuvBytes, imageProxy.width, imageProxy.height)
 
-                // Display to surface
-                // drawBitmapOnSurfaceView(byteArrayToBitmap(bytes))
+                    // Convert image to a suitable format (JPEG/Bitmap)
+                    // val yBuffer = imageProxy.planes[0].buffer
+                    // val uBuffer = imageProxy.planes[1].buffer
+                    // val vBuffer = imageProxy.planes[2].buffer
+                    // Pass bytes to the network streaming function
+                    // sendFrameOverNetwork(bytesLumaY, bytesBlueChromaU, bytesRedChromaV, imageProxy.width, imageProxy.height)
+                }
 
-                // Pass bytes to the network streaming function
-                sendFrameOverNetwork(bytes)
-
-                imageProxy.close()
+                // Free memory here!
+                imageProxy.close()  // Close the image to free resources
         })
 
         // Select back camera as a default
@@ -442,39 +464,307 @@ class MainActivity : AppCompatActivity() {
         cameraProvider.bindToLifecycle(this, cameraSelector, imageAnalysis)
     }
 
-    private fun byteArrayToBitmap(byteArray: ByteArray?): Bitmap? {
-        if (byteArray == null) {
-            Log.e("MainActivity", "Byte array is null, cannot decode to bitmap")
-            return null // Or handle the null case differently
-        }
-        return BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size)
+    private fun sendUdpFramePackets(frameData: ByteArray,
+                                    width: Int,
+                                    height: Int) {
+        // val thread = Thread {
+            try {
+                // Create a UDP socket
+                if (socketFrameBytes == null) {
+                    socketFrameBytes = DatagramSocket()
+                }
+
+                // Get destination address
+                val address = InetAddress.getByName("192.168.1.100")
+                val outGoingPort = 50000
+                val inComingPort = 54321
+
+                var mtu = width + 1 + 1 + 2 + 2
+                val headerBytes = buildHeaderByteArray(mtu, width, height)
+                val packetHeader = DatagramPacket(headerBytes, headerBytes.size, address, outGoingPort)
+                var headerReceived = false
+                var attempts = 0
+                do {
+                    socketFrameBytes?.send(packetHeader)
+                    val responseCode = ResponseCodeWrapper(0, "") // Initialize the responseCode variable
+                    headerReceived = udpReceiver.receiveHeaderAcknowledgement(inComingPort, frameCount, responseCode)
+                    textViewInfo.text = buildString {
+                        append("Receiving code #")
+                        append(responseCode.value)
+                        append(" after - attempt #")
+                        append(attempts)
+                        append(" msg:")
+                        append(responseCode.message)
+                    }
+                    if(!headerReceived) {
+                        textViewError.text = "Header not received - Waiting next frame"
+                    }
+                    attempts++
+                } while (!headerReceived)
+                textViewError.text = buildString {
+                    append("Header finally received after ")
+                    append(attempts)
+                }
+
+                // Create a DatagramPacket with the byteArray and send
+                val size = 0
+                mtu = 5 + width
+                val line = ByteArray(mtu)
+                var row = 0
+                while (row < height) {
+                    var destPos = 0
+                    mapByteArray(lastByteValue(0xFF), line, destPos, 1)
+                    destPos++
+                    mapByteArray(lastTwoBytesValue(frameCount), line, destPos, 2)
+                    destPos += 2
+                    mapByteArray(lastTwoBytesValue(row), line, destPos, 2)
+                    destPos += 2
+                    val offset = row * width
+                    mapByteArray(frameData.copyOfRange(offset, offset + width), line, destPos, width)
+                    val packetRow = DatagramPacket(line, 0, line.size, address, outGoingPort)
+                    var response = false
+                    while(!response) {
+                        socketFrameBytes?.send(packetRow)
+                        response = udpReceiver.receiveUdpAcknowledgement(inComingPort, frameCount, size, 5)
+                        if (!response) {
+                            textViewError.text = buildString {
+                                append("Failed to ACK line ")
+                                append(row)
+                                append(" of frame ")
+                                append(frameCount)
+                            }
+                        }
+                    }
+                    row++
+                }
+
+            } catch (e: Exception) {
+                e.printStackTrace()
+                textViewError.text = e.message
+            }
+        // }
+        // thread.start()
     }
 
-    private fun drawBitmapOnSurfaceView(bitmap: Bitmap?) {
-        if (bitmap != null) {
-            val canvas: Canvas = surfaceJpegHolder.lockCanvas()
-            canvas.drawBitmap(bitmap, null, Rect(0, 0, surfaceJPEG.width, surfaceJPEG.height), null)
-            surfaceJpegHolder.unlockCanvasAndPost(canvas)
+    private fun hexStringToByteArray(hexString: String): ByteArray {
+        require(hexString.length % 2 == 0) { "Hex string must have an even length" }
+        val result = ByteArray(hexString.length / 2)
+        for (i in result.indices) {
+            val highNibble = hexString[i * 2].digitToIntOrNull(16) ?: error("Invalid hex digit")
+            val lowNibble = hexString[i * 2 + 1].digitToIntOrNull(16) ?: error("Invalid hex digit")
+            result[i] = ((highNibble shl 4) or lowNibble).toByte()
         }
+        return result
     }
 
-    private fun sendFrameOverNetwork(frame: ByteArray) {
+    private fun intToBytesBigEndian(value: Int): ByteArray {
+        val buffer = ByteBuffer.allocate(Int.SIZE_BYTES).order(ByteOrder.BIG_ENDIAN)
+        buffer.putInt(value)
+        return buffer.array()
+    }
+
+    private fun lastTwoBytesValue(value: Int): ByteArray {
+        val originalBytes = intToBytesBigEndian(value)
+        require(originalBytes.size == Int.SIZE_BYTES) { "Input array must have exactly 4 bytes bytes" }
+        return byteArrayOf(originalBytes[2], originalBytes[3])
+    }
+
+    private fun lastByteValue(value: Int): ByteArray {
+        val originalBytes = intToBytesBigEndian(value)
+        require(originalBytes.size == Int.SIZE_BYTES) { "Input array must have exactly 4 bytes bytes" }
+        return byteArrayOf(originalBytes[3])
+    }
+
+    private fun byteArrayToHexString(bytes: ByteArray): String {
+        return bytes.joinToString("") { String.format("%02x", it) }
+    }
+
+    private fun mapByteArray(source: ByteArray, destination: ByteArray, destPos: Int, length: Int) {
+        require(destPos >= 0 &&
+                destPos + length <= destination.size) {
+            "Invalid destination position or length"
+        }
+        require(length <= source.size) { "Source array is too small" }
+        System.arraycopy(source, 0, destination, destPos, length)
+    }
+
+    private fun buildHeaderByteArray(mtu: Int, width: Int, height: Int) : ByteArray {
+
+        val byteArray = ByteArray(mtu)
+
+        // Frame width/height are limited to 65535x65535 pixels in header encoding
+        val beginFrameCode = 184 // 0xB8
+        frameCount = if (frameCount > 0xffff) 0 else frameCount + 1
+        val yuvCode = 422 // 0x1A6
+        val ecc = (beginFrameCode * beginFrameCode + yuvCode) / (width * 3 - height ) * 100
+        val headerHexStr =
+            byteArrayToHexString(lastByteValue(beginFrameCode)) +
+                    byteArrayToHexString(lastTwoBytesValue(yuvCode)) +
+                    byteArrayToHexString(lastTwoBytesValue(width)) +
+                    byteArrayToHexString(lastTwoBytesValue(height)) +
+                    byteArrayToHexString(lastTwoBytesValue(frameCount)) +
+                    byteArrayToHexString(lastTwoBytesValue(ecc))
+
+        // Log.i(TAG, "Sending header: $headerHexStr")
+        val headerByteArray = hexStringToByteArray(headerHexStr)
+        mapByteArray(headerByteArray, byteArray, 0, headerByteArray.size) // Line start 0xff
+
+        return byteArray
+    }
+
+    private fun sendFrameOverNetwork(
+        yChannel: ByteArray,
+        uChannel: ByteArray,
+        vChannel: ByteArray,
+        width: Int,
+        height: Int) {
         Thread {
             try {
-                val socket = DatagramSocket()
-                var curOffset = 0
-                while (curOffset < frame.size) {
-                    val packet = DatagramPacket(
-                        frame,
-                        curOffset,
-                        512,
-                        InetAddress.getByName("192.168.1.100"), // IP of the machine running VLC
-                        50000 // Port on which VLC will listen
-                    )
-                    socket.send(packet)
-                    curOffset += 512
+                if (socketFrameBytes == null) {
+                    socketFrameBytes = DatagramSocket()
                 }
-                socket.close()
+                // Init variable for sending packet
+                val port = 50000
+                // val ip = "10.11.12.200"
+                val ip = "192.168.1.100"
+
+                val mtu = width + 1 + 1 + 2 + 2
+                val headerBytes = buildHeaderByteArray(mtu, width, height)
+
+                // Sending Header
+                var packet = DatagramPacket(
+                    headerBytes,
+                    0,
+                    headerBytes.size,
+                    InetAddress.getByName(ip), // IP of the machine running listener
+                    port // Port on which VLC will listen
+                )
+                socketFrameBytes?.send(packet)
+
+                val byteArray = ByteArray(mtu)
+
+                // Sending Y channel
+                var row = 0
+                var rowBytes : ByteArray
+                var widthBytes : ByteArray
+                val halfWidth = width / 2
+                val halfHeight = height / 2
+                while (row < height) {
+                    var size = 0
+                    mapByteArray(byteArrayOf(255.toByte()), byteArray, size, 1) // Line start 0xff
+                    size++
+                    mapByteArray(byteArrayOf(0.toByte()), byteArray, size, 1) // Plane number 0x00
+                    size++
+                    rowBytes = lastTwoBytesValue(row)
+                    mapByteArray(rowBytes, byteArray, size, 2)
+                    size += 2
+                    widthBytes = lastTwoBytesValue(width)
+                    mapByteArray(widthBytes, byteArray, size, 2)
+                    size += 2
+                    // ff 00 XXXX 0280 ... row #xxxx data
+
+                    val byteBufferY = ByteBuffer.wrap(yChannel)
+                    // Define the subset (elements from index 1 to 3 inclusive)
+                    var startIndex = row * width
+                    byteBufferY.position(startIndex)
+                    byteBufferY.limit(startIndex + width)
+                    // Use the ByteBuffer to access the subset without creating a new array
+                    var subsetBuffer = byteBufferY.slice() // Creates a new view, not a copy
+                    var subsetArray = ByteArray(subsetBuffer.remaining())
+                    subsetBuffer.get(subsetArray)
+
+                    mapByteArray(subsetArray, byteArray, size, width)
+
+                    packet = DatagramPacket(
+                        byteArray,
+                        0,
+                        byteArray.size,
+                        InetAddress.getByName(ip), // IP of the machine running listener
+                        port // Port on which VLC will listen
+                    )
+                    socketFrameBytes?.send(packet)
+
+                    if (row < halfHeight && row % 2 == 0) {
+                        // Sending U channel
+                        size = 0
+                        mapByteArray(
+                            byteArrayOf(255.toByte()),
+                            byteArray,
+                            size,
+                            1
+                        ) // Line start 0xff
+                        size++
+                        mapByteArray(
+                            byteArrayOf(1.toByte()),
+                            byteArray,
+                            size,
+                            1
+                        ) // Plane number 0x01
+                        size++
+                        rowBytes = lastTwoBytesValue(row)
+                        mapByteArray(rowBytes, byteArray, size, 2)
+                        size += 2
+                        widthBytes = lastTwoBytesValue(width)
+                        mapByteArray(widthBytes, byteArray, size, 2)
+                        size += 2
+                        // ff 01 xxxx 0280 ... row #xxxx data
+
+                        val byteBufferU = ByteBuffer.wrap(uChannel)
+                        // Define the subset (elements from index 1 to 3 inclusive)
+                        startIndex = row * halfWidth
+                        byteBufferU.position(startIndex)
+                        byteBufferU.limit(startIndex + width)
+                        // Use the ByteBuffer to access the subset without creating a new array
+                        subsetBuffer = byteBufferU.slice() // Creates a new view, not a copy
+                        subsetArray = ByteArray(subsetBuffer.remaining())
+                        subsetBuffer.get(subsetArray)
+
+                        mapByteArray(subsetArray, byteArray, size, width)
+                        packet = DatagramPacket(
+                            byteArray,
+                            0,
+                            byteArray.size,
+                            InetAddress.getByName(ip), // IP of the machine running listener
+                            port // Port on which VLC will listen
+                        )
+                        socketFrameBytes?.send(packet)
+
+                        // Sending V channel
+                        size = 0
+                        mapByteArray(byteArrayOf(255.toByte()), byteArray, size, 1) // Line start 0xff
+                        size++
+                        mapByteArray(byteArrayOf(2.toByte()), byteArray, size, 1) // Plane number 0x02
+                        size++
+                        rowBytes = lastTwoBytesValue(row)
+                        mapByteArray(rowBytes, byteArray, size, 2)
+                        size += 2
+                        widthBytes = lastTwoBytesValue(width)
+                        mapByteArray(widthBytes, byteArray, size, 2)
+                        size += 2
+                        // ff 02 xxxx 0280 ... row #xxxx data
+
+                        val byteBufferV = ByteBuffer.wrap(vChannel)
+                        // Define the subset (elements from index 1 to 3 inclusive)
+                        startIndex = row * halfWidth
+                        byteBufferV.position(startIndex)
+                        byteBufferV.limit(startIndex + width)
+                        // Use the ByteBuffer to access the subset without creating a new array
+                        subsetBuffer = byteBufferV.slice() // Creates a new view, not a copy
+                        subsetArray = ByteArray(subsetBuffer.remaining())
+                        subsetBuffer.get(subsetArray)
+
+                        mapByteArray(subsetArray, byteArray, size, width)
+                        packet = DatagramPacket(
+                            byteArray,
+                            0,
+                            byteArray.size,
+                            InetAddress.getByName(ip), // IP of the machine running listener
+                            port // Port on which VLC will listen
+                        )
+                        socketFrameBytes?.send(packet)
+                    }
+                    row++
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
                 textViewError.text = e.message
