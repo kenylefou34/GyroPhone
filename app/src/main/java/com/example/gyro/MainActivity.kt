@@ -29,8 +29,9 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.example.gyro.databinding.ActivityMainBinding
-import java.net.DatagramPacket
-import java.net.DatagramSocket
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.net.InetAddress
 import java.net.NetworkInterface
 import java.nio.ByteBuffer
@@ -80,8 +81,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var viewTextViewMaxY : TextView
     private lateinit var viewTextViewMaxZ : TextView
 
-    private var socketFrameBytes : DatagramSocket? = null
-    private val udpReceiver = UdpReceiver
+    private val tcpClient = TcpClient
 
     private lateinit var textViewError : TextView
     private lateinit var textViewInfo : TextView
@@ -93,6 +93,8 @@ class MainActivity : AppCompatActivity() {
     private var resetGravity = true
     private var isFrontCameraActive = false
     private var isDisplayEnabled = false
+
+    private var mutex = Mutex() // Mutex lock
 
     private var frameCount = 0 // limited to 65535 - 2 octets
 
@@ -215,10 +217,8 @@ class MainActivity : AppCompatActivity() {
         if(allPermissionsGranted(applicationContext)) {
             sensorManager.unregisterListener(sensorListener)
         }
-        socketFrameBytes?.close()
-        socketFrameBytes = null
 
-        udpReceiver.close()
+        tcpClient.close()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -312,10 +312,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        socketFrameBytes?.close()
-        socketFrameBytes = null
 
-        udpReceiver.close()
+        tcpClient.close()
 
         cameraExecutor.shutdown()
     }
@@ -441,14 +439,7 @@ class MainActivity : AppCompatActivity() {
                 // Convert ImageProxy to NV21 ByteArray (YUV data)
                 val yuvBytes = imageProxyToNv21(imageProxy)
                 if (yuvBytes != null) {
-                    sendUdpFramePackets(yuvBytes, imageProxy.width, imageProxy.height)
-
-                    // Convert image to a suitable format (JPEG/Bitmap)
-                    // val yBuffer = imageProxy.planes[0].buffer
-                    // val uBuffer = imageProxy.planes[1].buffer
-                    // val vBuffer = imageProxy.planes[2].buffer
-                    // Pass bytes to the network streaming function
-                    // sendFrameOverNetwork(bytesLumaY, bytesBlueChromaU, bytesRedChromaV, imageProxy.width, imageProxy.height)
+                    sendTcpFramePackets(yuvBytes, imageProxy.width, imageProxy.height)
                 }
 
                 // Free memory here!
@@ -464,54 +455,24 @@ class MainActivity : AppCompatActivity() {
         cameraProvider.bindToLifecycle(this, cameraSelector, imageAnalysis)
     }
 
-    private fun sendUdpFramePackets(frameData: ByteArray,
+    private fun sendTcpFramePackets(frameData: ByteArray,
                                     width: Int,
-                                    height: Int) {
-        // val thread = Thread {
+                                    height: Int) = runBlocking {
+        mutex.withLock {
             try {
-                // Create a UDP socket
-                if (socketFrameBytes == null) {
-                    socketFrameBytes = DatagramSocket()
-                }
-
-                // Get destination address
-                val address = InetAddress.getByName("192.168.1.100")
-                val outGoingPort = 50000
-                val inComingPort = 54321
-
+                // Make frame header data packet
                 var mtu = width + 1 + 1 + 2 + 2
                 val headerBytes = buildHeaderByteArray(mtu, width, height)
-                val packetHeader = DatagramPacket(headerBytes, headerBytes.size, address, outGoingPort)
-                var headerReceived = false
-                var attempts = 0
-                do {
-                    socketFrameBytes?.send(packetHeader)
-                    val responseCode = ResponseCodeWrapper(0, "") // Initialize the responseCode variable
-                    headerReceived = udpReceiver.receiveHeaderAcknowledgement(inComingPort, frameCount, responseCode)
-                    textViewInfo.text = buildString {
-                        append("Receiving code #")
-                        append(responseCode.value)
-                        append(" after - attempt #")
-                        append(attempts)
-                        append(" msg:")
-                        append(responseCode.message)
-                    }
-                    if(!headerReceived) {
-                        textViewError.text = "Header not received - Waiting next frame"
-                    }
-                    attempts++
-                } while (!headerReceived)
-                textViewError.text = buildString {
-                    append("Header finally received after ")
-                    append(attempts)
-                }
+                // Send header
+                tcpClient.send(headerBytes)
 
-                // Create a DatagramPacket with the byteArray and send
-                val size = 0
+                // Create a DatagramPacket with the byteArray of the whole frame and send it
                 mtu = 5 + width
                 val line = ByteArray(mtu)
                 var row = 0
+                // For each row of the image
                 while (row < height) {
+                    // Make data packet
                     var destPos = 0
                     mapByteArray(lastByteValue(0xFF), line, destPos, 1)
                     destPos++
@@ -521,20 +482,9 @@ class MainActivity : AppCompatActivity() {
                     destPos += 2
                     val offset = row * width
                     mapByteArray(frameData.copyOfRange(offset, offset + width), line, destPos, width)
-                    val packetRow = DatagramPacket(line, 0, line.size, address, outGoingPort)
-                    var response = false
-                    while(!response) {
-                        socketFrameBytes?.send(packetRow)
-                        response = udpReceiver.receiveUdpAcknowledgement(inComingPort, frameCount, size, 5)
-                        if (!response) {
-                            textViewError.text = buildString {
-                                append("Failed to ACK line ")
-                                append(row)
-                                append(" of frame ")
-                                append(frameCount)
-                            }
-                        }
-                    }
+                    // Send data
+                    tcpClient.send(line)
+                    // Increment row
                     row++
                 }
 
@@ -542,8 +492,7 @@ class MainActivity : AppCompatActivity() {
                 e.printStackTrace()
                 textViewError.text = e.message
             }
-        // }
-        // thread.start()
+        }
     }
 
     private fun hexStringToByteArray(hexString: String): ByteArray {
@@ -610,165 +559,5 @@ class MainActivity : AppCompatActivity() {
         mapByteArray(headerByteArray, byteArray, 0, headerByteArray.size) // Line start 0xff
 
         return byteArray
-    }
-
-    private fun sendFrameOverNetwork(
-        yChannel: ByteArray,
-        uChannel: ByteArray,
-        vChannel: ByteArray,
-        width: Int,
-        height: Int) {
-        Thread {
-            try {
-                if (socketFrameBytes == null) {
-                    socketFrameBytes = DatagramSocket()
-                }
-                // Init variable for sending packet
-                val port = 50000
-                // val ip = "10.11.12.200"
-                val ip = "192.168.1.100"
-
-                val mtu = width + 1 + 1 + 2 + 2
-                val headerBytes = buildHeaderByteArray(mtu, width, height)
-
-                // Sending Header
-                var packet = DatagramPacket(
-                    headerBytes,
-                    0,
-                    headerBytes.size,
-                    InetAddress.getByName(ip), // IP of the machine running listener
-                    port // Port on which VLC will listen
-                )
-                socketFrameBytes?.send(packet)
-
-                val byteArray = ByteArray(mtu)
-
-                // Sending Y channel
-                var row = 0
-                var rowBytes : ByteArray
-                var widthBytes : ByteArray
-                val halfWidth = width / 2
-                val halfHeight = height / 2
-                while (row < height) {
-                    var size = 0
-                    mapByteArray(byteArrayOf(255.toByte()), byteArray, size, 1) // Line start 0xff
-                    size++
-                    mapByteArray(byteArrayOf(0.toByte()), byteArray, size, 1) // Plane number 0x00
-                    size++
-                    rowBytes = lastTwoBytesValue(row)
-                    mapByteArray(rowBytes, byteArray, size, 2)
-                    size += 2
-                    widthBytes = lastTwoBytesValue(width)
-                    mapByteArray(widthBytes, byteArray, size, 2)
-                    size += 2
-                    // ff 00 XXXX 0280 ... row #xxxx data
-
-                    val byteBufferY = ByteBuffer.wrap(yChannel)
-                    // Define the subset (elements from index 1 to 3 inclusive)
-                    var startIndex = row * width
-                    byteBufferY.position(startIndex)
-                    byteBufferY.limit(startIndex + width)
-                    // Use the ByteBuffer to access the subset without creating a new array
-                    var subsetBuffer = byteBufferY.slice() // Creates a new view, not a copy
-                    var subsetArray = ByteArray(subsetBuffer.remaining())
-                    subsetBuffer.get(subsetArray)
-
-                    mapByteArray(subsetArray, byteArray, size, width)
-
-                    packet = DatagramPacket(
-                        byteArray,
-                        0,
-                        byteArray.size,
-                        InetAddress.getByName(ip), // IP of the machine running listener
-                        port // Port on which VLC will listen
-                    )
-                    socketFrameBytes?.send(packet)
-
-                    if (row < halfHeight && row % 2 == 0) {
-                        // Sending U channel
-                        size = 0
-                        mapByteArray(
-                            byteArrayOf(255.toByte()),
-                            byteArray,
-                            size,
-                            1
-                        ) // Line start 0xff
-                        size++
-                        mapByteArray(
-                            byteArrayOf(1.toByte()),
-                            byteArray,
-                            size,
-                            1
-                        ) // Plane number 0x01
-                        size++
-                        rowBytes = lastTwoBytesValue(row)
-                        mapByteArray(rowBytes, byteArray, size, 2)
-                        size += 2
-                        widthBytes = lastTwoBytesValue(width)
-                        mapByteArray(widthBytes, byteArray, size, 2)
-                        size += 2
-                        // ff 01 xxxx 0280 ... row #xxxx data
-
-                        val byteBufferU = ByteBuffer.wrap(uChannel)
-                        // Define the subset (elements from index 1 to 3 inclusive)
-                        startIndex = row * halfWidth
-                        byteBufferU.position(startIndex)
-                        byteBufferU.limit(startIndex + width)
-                        // Use the ByteBuffer to access the subset without creating a new array
-                        subsetBuffer = byteBufferU.slice() // Creates a new view, not a copy
-                        subsetArray = ByteArray(subsetBuffer.remaining())
-                        subsetBuffer.get(subsetArray)
-
-                        mapByteArray(subsetArray, byteArray, size, width)
-                        packet = DatagramPacket(
-                            byteArray,
-                            0,
-                            byteArray.size,
-                            InetAddress.getByName(ip), // IP of the machine running listener
-                            port // Port on which VLC will listen
-                        )
-                        socketFrameBytes?.send(packet)
-
-                        // Sending V channel
-                        size = 0
-                        mapByteArray(byteArrayOf(255.toByte()), byteArray, size, 1) // Line start 0xff
-                        size++
-                        mapByteArray(byteArrayOf(2.toByte()), byteArray, size, 1) // Plane number 0x02
-                        size++
-                        rowBytes = lastTwoBytesValue(row)
-                        mapByteArray(rowBytes, byteArray, size, 2)
-                        size += 2
-                        widthBytes = lastTwoBytesValue(width)
-                        mapByteArray(widthBytes, byteArray, size, 2)
-                        size += 2
-                        // ff 02 xxxx 0280 ... row #xxxx data
-
-                        val byteBufferV = ByteBuffer.wrap(vChannel)
-                        // Define the subset (elements from index 1 to 3 inclusive)
-                        startIndex = row * halfWidth
-                        byteBufferV.position(startIndex)
-                        byteBufferV.limit(startIndex + width)
-                        // Use the ByteBuffer to access the subset without creating a new array
-                        subsetBuffer = byteBufferV.slice() // Creates a new view, not a copy
-                        subsetArray = ByteArray(subsetBuffer.remaining())
-                        subsetBuffer.get(subsetArray)
-
-                        mapByteArray(subsetArray, byteArray, size, width)
-                        packet = DatagramPacket(
-                            byteArray,
-                            0,
-                            byteArray.size,
-                            InetAddress.getByName(ip), // IP of the machine running listener
-                            port // Port on which VLC will listen
-                        )
-                        socketFrameBytes?.send(packet)
-                    }
-                    row++
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-                textViewError.text = e.message
-            }
-        }.start()
     }
 }
