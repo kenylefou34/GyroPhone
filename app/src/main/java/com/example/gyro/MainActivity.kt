@@ -10,6 +10,7 @@ import android.hardware.SensorManager
 import android.media.Image
 import android.os.Build
 import android.os.Bundle
+import android.provider.ContactsContract.Data
 import android.util.Log
 import android.util.Range
 import android.widget.Button
@@ -32,6 +33,8 @@ import com.example.gyro.databinding.ActivityMainBinding
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.NetworkInterface
 import java.nio.ByteBuffer
@@ -81,7 +84,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var viewTextViewMaxY : TextView
     private lateinit var viewTextViewMaxZ : TextView
 
-    private val tcpClient = TcpClient
+    // private val tcpClient = TcpClient
+    // private val udpClient = UdpClient
+    private var socket: DatagramSocket? = null
+    // private const val IP = "192.168.1.100" // Replace with server IP
+    private val IP = "PORT-KEN"
+    private val PORT = 5000 // Replace with server port
 
     private lateinit var textViewError : TextView
     private lateinit var textViewInfo : TextView
@@ -218,7 +226,9 @@ class MainActivity : AppCompatActivity() {
             sensorManager.unregisterListener(sensorListener)
         }
 
-        tcpClient.close()
+        socket?.close()
+        // tcpClient.close()
+        // udpClient.close()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -313,13 +323,17 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
 
-        tcpClient.close()
+        // tcpClient.close()
+        // udpClient.close()
+        socket?.close()
+        socket = null
 
         cameraExecutor.shutdown()
     }
 
     companion object {
-        private const val TAG = "CameraXApp"
+        private const val TAG = "App"
+        private const val DTAG = "DebugApp"
         private val REQUIRED_PERMISSIONS =
             mutableListOf (
                 Manifest.permission.CAMERA,
@@ -439,7 +453,7 @@ class MainActivity : AppCompatActivity() {
                 // Convert ImageProxy to NV21 ByteArray (YUV data)
                 val yuvBytes = imageProxyToNv21(imageProxy)
                 if (yuvBytes != null) {
-                    sendTcpFramePackets(yuvBytes, imageProxy.width, imageProxy.height)
+                    sendFramePackets(yuvBytes, imageProxy.width, imageProxy.height)
                 }
 
                 // Free memory here!
@@ -455,16 +469,26 @@ class MainActivity : AppCompatActivity() {
         cameraProvider.bindToLifecycle(this, cameraSelector, imageAnalysis)
     }
 
-    private fun sendTcpFramePackets(frameData: ByteArray,
-                                    width: Int,
-                                    height: Int) = runBlocking {
+    private fun sendFramePackets(frameData: ByteArray,
+                                 width: Int,
+                                 height: Int) = runBlocking {
         mutex.withLock {
             try {
+                val startTime = System.nanoTime()
+
+                // Create a socket
+                if (socket == null) {
+                    socket = DatagramSocket()
+                    // socket?.setSendBufferSize(65536) // Set send buffer size to 64 KB
+                }
+
                 // Make frame header data packet
                 var mtu = width + 1 + 1 + 2 + 2
                 val headerBytes = buildHeaderByteArray(mtu, width, height)
                 // Send header
-                tcpClient.send(headerBytes)
+                // Sending packet
+                val headerPacket = DatagramPacket(headerBytes, headerBytes.size, InetAddress.getByName(IP), PORT)
+                socket?.send(headerPacket)
 
                 // Create a DatagramPacket with the byteArray of the whole frame and send it
                 mtu = 5 + width
@@ -483,15 +507,29 @@ class MainActivity : AppCompatActivity() {
                     val offset = row * width
                     mapByteArray(frameData.copyOfRange(offset, offset + width), line, destPos, width)
                     // Send data
-                    tcpClient.send(line)
+                    // Sending packet
+                    val dataPacket = DatagramPacket(line, line.size, InetAddress.getByName(IP), PORT)
+                    socket?.send(dataPacket)
+                    // or
+                    // udpClient.send(line)
                     // Increment row
                     row++
                 }
 
+                val endTime = System.nanoTime()
+                val duration = (endTime - startTime) / 1_000_000
+                Log.d(DTAG, "bindPreviewImage: $duration")
             } catch (e: Exception) {
                 e.printStackTrace()
                 textViewError.text = e.message
             }
+        }
+    }
+
+    private fun sleepNano(delayNano: Long) {
+        val startSleepTime = System.nanoTime()
+        while (System.nanoTime() - startSleepTime < delayNano) {
+            // Sleep ZZzzzZZzzz
         }
     }
 
