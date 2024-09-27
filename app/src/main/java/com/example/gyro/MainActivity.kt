@@ -7,28 +7,25 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import android.media.Image
-import android.os.Build
 import android.os.Bundle
-import android.provider.ContactsContract.Data
 import android.util.Log
-import android.util.Range
+import android.view.Surface
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
-import androidx.annotation.OptIn
 import androidx.appcompat.app.AppCompatActivity
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ExperimentalGetImage
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
+import androidx.camera.core.Camera
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.lifecycle.LifecycleOwner
+import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
 import com.example.gyro.databinding.ActivityMainBinding
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
@@ -66,7 +63,12 @@ class MainActivity : AppCompatActivity() {
     /* CAMERA STUFFS */
     private lateinit var viewBinding: ActivityMainBinding
 
+    private var cameraProvider: ProcessCameraProvider? = null
+    private var camera: Camera? = null
     private lateinit var cameraExecutor: ExecutorService
+
+    private lateinit var mediaCodec: MediaCodec
+    private lateinit var inputSurface: Surface
 
     /* SENSORS STUFFS */
     private lateinit var sensorManager: SensorManager
@@ -84,27 +86,23 @@ class MainActivity : AppCompatActivity() {
     private lateinit var viewTextViewMaxY : TextView
     private lateinit var viewTextViewMaxZ : TextView
 
-    // private val tcpClient = TcpClient
-    // private val udpClient = UdpClient
+    /* VIEW STUFFS */
+    private lateinit var textViewError : TextView
+    private lateinit var textViewInfo : TextView
+
+    /* SOCKET STUFFS */
+    private var mutex = Mutex() // Mutex lock
     private var socket: DatagramSocket? = null
     // private const val IP = "192.168.1.100" // Replace with server IP
     private val IP = "PORT-KEN"
-    private val PORT = 5000 // Replace with server port
 
-    private lateinit var textViewError : TextView
-    private lateinit var textViewInfo : TextView
+    private val PORT = 5000 // Replace with server port
 
     private var minValues = floatArrayOf(Float.MAX_VALUE, Float.MAX_VALUE, Float.MAX_VALUE)
     private var maxValues = floatArrayOf(Float.MIN_VALUE, Float.MIN_VALUE, Float.MIN_VALUE)
 
     private val initialGravity = floatArrayOf(0f, 0f, 0f)
     private var resetGravity = true
-    private var isFrontCameraActive = false
-    private var isDisplayEnabled = false
-
-    private var mutex = Mutex() // Mutex lock
-
-    private var frameCount = 0 // limited to 65535 - 2 octets
 
     /* METHODS */
     override fun onRequestPermissionsResult(
@@ -290,9 +288,13 @@ class MainActivity : AppCompatActivity() {
             ipAddressText.text = ip
 
             // Permission already granted, proceed with camera usage
-            cameraExecutor = Executors.newSingleThreadExecutor()
+            // cameraExecutor = Executors.newSingleThreadExecutor()
 
-            startCamera()
+            // Start camera preview with CameraX
+            startCameraPreview()
+
+            // Initialize MediaCodec for H.264 encoding
+            initMediaCodec()
         }
     }
 
@@ -322,206 +324,140 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-
-        // tcpClient.close()
-        // udpClient.close()
-        socket?.close()
-        socket = null
+        mediaCodec.stop()
+        mediaCodec.release()
 
         cameraExecutor.shutdown()
     }
 
-    companion object {
-        private const val TAG = "App"
-        private const val DTAG = "DebugApp"
-        private val REQUIRED_PERMISSIONS =
-            mutableListOf (
-                Manifest.permission.CAMERA,
-                Manifest.permission.RECORD_AUDIO
-            ).apply {
-                if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-                    add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                }
-            }.toTypedArray()
-    }
-
-    private fun startCamera() {
+    private fun startCameraPreview() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
-
         cameraProviderFuture.addListener({
-            // Used to bind the lifecycle of cameras to the lifecycle owner
-            val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
+            val cameraProvider = cameraProviderFuture.get()
+            val preview = Preview.Builder().build()
 
-            // Setting preview camera
-            val previewBuilder = Preview.Builder()
-            // Manage Frame Rate
-            previewBuilder.setTargetFrameRate(Range(20,25))
+            preview.setSurfaceProvider { surfaceRequest ->
+                // Use the surface from MediaCodec as the camera's preview output
+                surfaceRequest.provideSurface(inputSurface, ContextCompat.getMainExecutor(this)) {
+                    // Handle when surface is no longer valid
+                }
+            }
+
+            val cameraSelector = androidx.camera.core.CameraSelector.DEFAULT_BACK_CAMERA
 
             try {
-
-                bindPreviewImage(cameraProvider)
-
-                val displayCameraButton: Button = findViewById(R.id.enableCameraDisplay)
-                displayCameraButton.setOnClickListener {
-                    if (isDisplayEnabled) {
-                        Toast.makeText(applicationContext, "Enable display", Toast.LENGTH_SHORT).show()
-                        displayFrontOrBackCamera(cameraProvider, previewBuilder)
-                    }
-                    else {
-                        Toast.makeText(applicationContext, "Sending images", Toast.LENGTH_SHORT).show()
-                        bindPreviewImage(cameraProvider)
-                    }
-                    isDisplayEnabled = !isDisplayEnabled
-                }
-
-                val switchButton: Button = findViewById(R.id.switchCamera)
-                switchButton.setOnClickListener {
-                    isFrontCameraActive = !isFrontCameraActive
-                    if (isDisplayEnabled) {
-                        displayFrontOrBackCamera(cameraProvider, previewBuilder)
-                    }
-                }
-
-            } catch(exc: Exception) {
-                Log.e(TAG, "Use case binding failed", exc)
+                cameraProvider.unbindAll()
+                cameraProvider.bindToLifecycle(this as LifecycleOwner, cameraSelector, preview)
+            } catch (e: Exception) {
+                Log.e(TAG, "Camera binding failed", e)
             }
         }, ContextCompat.getMainExecutor(this))
     }
 
-    private fun displayFrontOrBackCamera(cameraProvider: ProcessCameraProvider, previewBuilder: Preview.Builder)  {
-        cameraProvider.unbindAll()
-        // Select back camera as a default
-        val cameraSelectorBack = CameraSelector.DEFAULT_BACK_CAMERA
-        val cameraSelectorFront = CameraSelector.DEFAULT_FRONT_CAMERA
+    private fun initMediaCodec() {
+        try {
+            val width = 1920  // Set your desired width
+            val height = 1080  // Set your desired height
+            val bitRate = 4000000  // Set your desired bit rate (4Mbps in this example)
+            val frameRate = 30  // Set frame rate (30 fps in this example)
+            val iFrameInterval = 1  // Keyframe every 1 second
 
-        val preview = previewBuilder.build().also {
-            it.setSurfaceProvider(viewBinding.viewCamera.surfaceProvider)
-        }
+            // Create the MediaFormat for H.264 encoding
+            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
+            format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+            format.setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
+            format.setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
+            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, iFrameInterval)
 
-        if (isFrontCameraActive) {
-            cameraProvider.bindToLifecycle(this, cameraSelectorBack, preview)
-        }
-        else {
-            cameraProvider.bindToLifecycle(
-                this, cameraSelectorFront, preview)
+            // Initialize MediaCodec for video encoding
+            mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+            mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+
+            // Get the input surface for the encoder (used as the preview output)
+            inputSurface = mediaCodec.createInputSurface()
+            mediaCodec.start()
+
+            // Start a background thread to handle encoded output
+            val executor = Executors.newSingleThreadExecutor()
+            executor.execute {
+                encodeH264()
+            }
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Error initializing MediaCodec", e)
         }
     }
 
-    @OptIn(ExperimentalGetImage::class)
-    private fun imageProxyToNv21(imageProxy: ImageProxy): ByteArray? {
-        val image = imageProxy.image ?: return null
+    private fun encodeH264() {
+        val bufferInfo = MediaCodec.BufferInfo()
 
-        // Convert the YUV_420_888 Image to NV21 format
-        return yuvToNv21(image)
-    }
+        while (true) {
+            val outputBufferIndex = mediaCodec.dequeueOutputBuffer(bufferInfo, 10000)
+            if (outputBufferIndex >= 0) {
+                // Retrieve the encoded frame from MediaCodec
+                val encodedData: ByteBuffer = mediaCodec.getOutputBuffer(outputBufferIndex) ?: continue
 
-    // Converts YUV_420_888 image to NV21 format byte array
-    private fun yuvToNv21(image: Image): ByteArray {
-        val yBuffer: ByteBuffer = image.planes[0].buffer // Y
-        val uBuffer: ByteBuffer = image.planes[1].buffer // U
-        val vBuffer: ByteBuffer = image.planes[2].buffer // V
-
-        val ySize = yBuffer.remaining()
-        val uSize = uBuffer.remaining()
-        val vSize = vBuffer.remaining()
-
-        val nv21 = ByteArray(ySize + uSize + vSize)
-
-        yBuffer.get(nv21, 0, ySize)
-        vBuffer.get(nv21, ySize, vSize)
-        uBuffer.get(nv21, ySize + vSize, uSize)
-
-        return nv21
-    }
-
-    private fun bindPreviewImage(cameraProvider: ProcessCameraProvider) {
-        // Unbind use cases before rebinding
-        cameraProvider.unbindAll()
-
-        val imageAnalysis = ImageAnalysis.Builder()
-            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .build()
-
-        imageAnalysis.setAnalyzer(
-            Executors.newSingleThreadExecutor(), ImageAnalysis.Analyzer { imageProxy: ImageProxy ->
-                textViewError.text = buildString {
-                    append(imageProxy.width.toString())
-                    append("x")
-                    append(imageProxy.height.toString())
+                if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
+                    // Codec specific data, skip it
+                    mediaCodec.releaseOutputBuffer(outputBufferIndex, false)
+                    continue
                 }
 
-                // Convert ImageProxy to NV21 ByteArray (YUV data)
-                val yuvBytes = imageProxyToNv21(imageProxy)
-                if (yuvBytes != null) {
-                    sendFramePackets(yuvBytes, imageProxy.width, imageProxy.height)
-                }
+                // Process the H.264 encoded data (e.g., write to file or stream)
+                val h264Data = ByteArray(bufferInfo.size)
+                encodedData.get(h264Data)
 
-                // Free memory here!
-                imageProxy.close()  // Close the image to free resources
-        })
+                // Here, you get the encoded H.264 ByteArray (h264Data)
+                processH264Data(h264Data)
 
-        // Select back camera as a default
-        val cameraSelector =
-            if (isFrontCameraActive) CameraSelector.DEFAULT_FRONT_CAMERA
-            else CameraSelector.DEFAULT_BACK_CAMERA
-
-        // Bind the ImageAnalysis use case
-        cameraProvider.bindToLifecycle(this, cameraSelector, imageAnalysis)
+                mediaCodec.releaseOutputBuffer(outputBufferIndex, false)
+            }
+        }
     }
 
-    private fun sendFramePackets(frameData: ByteArray,
-                                 width: Int,
-                                 height: Int) = runBlocking {
+    private fun processH264Data(h264Data: ByteArray) = runBlocking {
+        // Handle the H.264 data (e.g., save it, stream it, etc.)
+        Log.d(TAG, "Encoded H.264 data of size: ${h264Data.size}")
+
+        val mtuSize = 1024
+        val totalSize = h264Data.size
+
+        // For example, you could save the h264Data to a file
         mutex.withLock {
             try {
+                var sentSize = 0
                 val startTime = System.nanoTime()
 
-                // Create a socket
-                if (socket == null) {
-                    socket = DatagramSocket()
-                    // socket?.setSendBufferSize(65536) // Set send buffer size to 64 KB
-                }
+                while (sentSize < totalSize) {
+                    // Create a socket
+                    if (socket == null) {
+                        socket = DatagramSocket()
+                    }
 
-                // Make frame header data packet
-                var mtu = width + 1 + 1 + 2 + 2
-                val headerBytes = buildHeaderByteArray(mtu, width, height)
-                // Send header
-                // Sending packet
-                val headerPacket = DatagramPacket(headerBytes, headerBytes.size, InetAddress.getByName(IP), PORT)
-                socket?.send(headerPacket)
+                    var datalength = mtuSize
+                    if(sentSize + datalength > totalSize) {
+                        datalength = totalSize - sentSize
+                    }
 
-                // Create a DatagramPacket with the byteArray of the whole frame and send it
-                mtu = 5 + width
-                val line = ByteArray(mtu)
-                var row = 0
-                // For each row of the image
-                while (row < height) {
-                    // Make data packet
-                    var destPos = 0
-                    mapByteArray(lastByteValue(0xFF), line, destPos, 1)
-                    destPos++
-                    mapByteArray(lastTwoBytesValue(frameCount), line, destPos, 2)
-                    destPos += 2
-                    mapByteArray(lastTwoBytesValue(row), line, destPos, 2)
-                    destPos += 2
-                    val offset = row * width
-                    mapByteArray(frameData.copyOfRange(offset, offset + width), line, destPos, width)
-                    // Send data
-                    // Sending packet
-                    val dataPacket = DatagramPacket(line, line.size, InetAddress.getByName(IP), PORT)
-                    socket?.send(dataPacket)
-                    // or
-                    // udpClient.send(line)
-                    // Increment row
-                    row++
+                    val data = ByteArray(datalength)
+                    mapByteArray(h264Data, data, sentSize, 0, datalength)
+
+                    val packet =
+                        DatagramPacket(data, data.size, InetAddress.getByName(IP), PORT)
+                    sentSize += datalength
+
+                    socket?.send(packet)
                 }
 
                 val endTime = System.nanoTime()
                 val duration = (endTime - startTime) / 1_000_000
-                Log.d(DTAG, "bindPreviewImage: $duration")
+                Log.d(TAG, "bindPreviewImage: $duration")
             } catch (e: Exception) {
                 e.printStackTrace()
                 textViewError.text = e.message
+
+                socket?.close()
+                socket = null
             }
         }
     }
@@ -566,36 +502,12 @@ class MainActivity : AppCompatActivity() {
         return bytes.joinToString("") { String.format("%02x", it) }
     }
 
-    private fun mapByteArray(source: ByteArray, destination: ByteArray, destPos: Int, length: Int) {
+    private fun mapByteArray(source: ByteArray, destination: ByteArray, srcPos: Int, destPos: Int, length: Int) {
         require(destPos >= 0 &&
                 destPos + length <= destination.size) {
             "Invalid destination position or length"
         }
         require(length <= source.size) { "Source array is too small" }
-        System.arraycopy(source, 0, destination, destPos, length)
-    }
-
-    private fun buildHeaderByteArray(mtu: Int, width: Int, height: Int) : ByteArray {
-
-        val byteArray = ByteArray(mtu)
-
-        // Frame width/height are limited to 65535x65535 pixels in header encoding
-        val beginFrameCode = 184 // 0xB8
-        frameCount = if (frameCount > 0xffff) 0 else frameCount + 1
-        val yuvCode = 422 // 0x1A6
-        val ecc = (beginFrameCode * beginFrameCode + yuvCode) / (width * 3 - height ) * 100
-        val headerHexStr =
-            byteArrayToHexString(lastByteValue(beginFrameCode)) +
-                    byteArrayToHexString(lastTwoBytesValue(yuvCode)) +
-                    byteArrayToHexString(lastTwoBytesValue(width)) +
-                    byteArrayToHexString(lastTwoBytesValue(height)) +
-                    byteArrayToHexString(lastTwoBytesValue(frameCount)) +
-                    byteArrayToHexString(lastTwoBytesValue(ecc))
-
-        // Log.i(TAG, "Sending header: $headerHexStr")
-        val headerByteArray = hexStringToByteArray(headerHexStr)
-        mapByteArray(headerByteArray, byteArray, 0, headerByteArray.size) // Line start 0xff
-
-        return byteArray
+        System.arraycopy(source, srcPos, destination, destPos, length)
     }
 }
