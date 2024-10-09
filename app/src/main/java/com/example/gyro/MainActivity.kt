@@ -62,13 +62,12 @@ private fun allPermissionsGranted(context: Context) = REQUIRED_PERMISSIONS.all {
 class MainActivity : AppCompatActivity() {
     /* CAMERA STUFFS */
     private lateinit var viewBinding: ActivityMainBinding
-
-    private var cameraProvider: ProcessCameraProvider? = null
-    private var camera: Camera? = null
     private lateinit var cameraExecutor: ExecutorService
 
     private lateinit var mediaCodec: MediaCodec
     private lateinit var inputSurface: Surface
+
+    private var frameCount: Int = 0
 
     /* SENSORS STUFFS */
     private lateinit var sensorManager: SensorManager
@@ -96,7 +95,7 @@ class MainActivity : AppCompatActivity() {
     // private const val IP = "192.168.1.100" // Replace with server IP
     private val IP = "PORT-KEN"
 
-    private val PORT = 5000 // Replace with server port
+    private val PORT = 50000 // Replace with server port
 
     private var minValues = floatArrayOf(Float.MAX_VALUE, Float.MAX_VALUE, Float.MAX_VALUE)
     private var maxValues = floatArrayOf(Float.MIN_VALUE, Float.MIN_VALUE, Float.MIN_VALUE)
@@ -340,6 +339,7 @@ class MainActivity : AppCompatActivity() {
                 // Use the surface from MediaCodec as the camera's preview output
                 surfaceRequest.provideSurface(inputSurface, ContextCompat.getMainExecutor(this)) {
                     // Handle when surface is no longer valid
+                    Log.e(TAG, "Surface is not valid")
                 }
             }
 
@@ -356,8 +356,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun initMediaCodec() {
         try {
-            val width = 1920  // Set your desired width
-            val height = 1080  // Set your desired height
+            val width = 640  // Set your desired width
+            val height = 480  // Set your desired height
             val bitRate = 4000000  // Set your desired bit rate (4Mbps in this example)
             val frameRate = 30  // Set frame rate (30 fps in this example)
             val iFrameInterval = 1  // Keyframe every 1 second
@@ -380,7 +380,7 @@ class MainActivity : AppCompatActivity() {
             // Start a background thread to handle encoded output
             val executor = Executors.newSingleThreadExecutor()
             executor.execute {
-                encodeH264()
+                encodeH264(width, height)
             }
 
         } catch (e: Exception) {
@@ -388,7 +388,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun encodeH264() {
+    private fun encodeH264(width : Int, height : Int) {
         val bufferInfo = MediaCodec.BufferInfo()
 
         while (true) {
@@ -408,18 +408,27 @@ class MainActivity : AppCompatActivity() {
                 encodedData.get(h264Data)
 
                 // Here, you get the encoded H.264 ByteArray (h264Data)
-                processH264Data(h264Data)
+                processH264Data(h264Data, width, height)
 
                 mediaCodec.releaseOutputBuffer(outputBufferIndex, false)
             }
         }
     }
 
-    private fun processH264Data(h264Data: ByteArray) = runBlocking {
+    private fun processH264Data(h264Data: ByteArray, width : Int, height : Int) = runBlocking {
         // Handle the H.264 data (e.g., save it, stream it, etc.)
         Log.d(TAG, "Encoded H.264 data of size: ${h264Data.size}")
 
-        val mtuSize = 1024
+        val mtuSize = 1200 // Adjust this value based on your requirements
+/*
+        // Prepend start code to the NAL unit
+        val startCode = byteArrayOf(0, 0, 0, 1) // 0x00000001
+        val packetData = ByteArray(h264Data.size + startCode.size)
+
+        // Copy start code and the buffer into the packet data
+        System.arraycopy(startCode, 0, packetData, 0, startCode.size)
+        System.arraycopy(h264Data, 0, packetData, startCode.size, h264Data.size)
+*/
         val totalSize = h264Data.size
 
         // For example, you could save the h264Data to a file
@@ -427,6 +436,15 @@ class MainActivity : AppCompatActivity() {
             try {
                 var sentSize = 0
                 val startTime = System.nanoTime()
+
+                // Sending frame header
+                // Make frame header data packet
+                var mtu = width + 1 + 1 + 2 + 2
+                val headerBytes = buildHeaderByteArray(mtu, width, height)
+                // Send header
+                // Sending packet
+                val headerPacket = DatagramPacket(headerBytes, headerBytes.size, InetAddress.getByName(IP), PORT)
+                socket?.send(headerPacket)
 
                 while (sentSize < totalSize) {
                     // Create a socket
@@ -460,6 +478,24 @@ class MainActivity : AppCompatActivity() {
                 socket = null
             }
         }
+    }
+
+    private fun buildHeaderByteArray(mtu: Int, width: Int, height: Int) : ByteArray {
+        // Frame width/height are limited to 65535x65535 pixels in header encoding
+        val beginFrameCode = 184 // 0xB8
+        frameCount = if (frameCount > 0xffff) 0 else frameCount + 1
+        val h264Code = 128 // 0x80
+        val ecc = (beginFrameCode * beginFrameCode + h264Code) / (width * 3 - height ) * 100
+        val headerHexStr =
+            byteArrayToHexString(lastByteValue(beginFrameCode)) +
+                    byteArrayToHexString(lastTwoBytesValue(h264Code)) +
+                    byteArrayToHexString(lastTwoBytesValue(width)) +
+                    byteArrayToHexString(lastTwoBytesValue(height)) +
+                    byteArrayToHexString(lastTwoBytesValue(frameCount)) +
+                    byteArrayToHexString(lastTwoBytesValue(ecc))
+
+        Log.d(TAG, "Sending header: $headerHexStr")
+        return hexStringToByteArray(headerHexStr)
     }
 
     private fun sleepNano(delayNano: Long) {
