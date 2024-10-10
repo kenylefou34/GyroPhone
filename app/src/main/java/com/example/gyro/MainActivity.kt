@@ -26,6 +26,12 @@ import androidx.lifecycle.LifecycleOwner
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
+import android.util.Size
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProxy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import com.example.gyro.databinding.ActivityMainBinding
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
@@ -224,8 +230,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         socket?.close()
-        // tcpClient.close()
-        // udpClient.close()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -286,9 +290,10 @@ class MainActivity : AppCompatActivity() {
             val ipAddressText = findViewById<TextView>(R.id.textViewIpAddress)
             ipAddressText.text = ip
 
-            // Permission already granted, proceed with camera usage
-            // cameraExecutor = Executors.newSingleThreadExecutor()
+            // Initialize the executor
+            cameraExecutor = Executors.newSingleThreadExecutor()
 
+            // Permission already granted, proceed with camera usage
             // Start camera preview with CameraX
             startCameraPreview()
 
@@ -343,36 +348,29 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            val cameraSelector = androidx.camera.core.CameraSelector.DEFAULT_BACK_CAMERA
-
+            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
             try {
                 cameraProvider.unbindAll()
                 cameraProvider.bindToLifecycle(this as LifecycleOwner, cameraSelector, preview)
             } catch (e: Exception) {
                 Log.e(TAG, "Camera binding failed", e)
             }
+
         }, ContextCompat.getMainExecutor(this))
     }
 
     private fun initMediaCodec() {
         try {
-            val width = 640  // Set your desired width
-            val height = 480  // Set your desired height
-            val bitRate = 4000000  // Set your desired bit rate (4Mbps in this example)
-            val frameRate = 30  // Set frame rate (30 fps in this example)
-            val iFrameInterval = 1  // Keyframe every 1 second
+            val width = 640
+            val height = 480
 
-            // Create the MediaFormat for H.264 encoding
+            mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
             format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            format.setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
-            format.setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
-            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, iFrameInterval)
-
-            // Initialize MediaCodec for video encoding
-            mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+            format.setInteger(MediaFormat.KEY_BIT_RATE, 4000000) // Bitrate
+            format.setInteger(MediaFormat.KEY_FRAME_RATE, 15) // FPS
+            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-
             // Get the input surface for the encoder (used as the preview output)
             inputSurface = mediaCodec.createInputSurface()
             mediaCodec.start()
@@ -380,55 +378,43 @@ class MainActivity : AppCompatActivity() {
             // Start a background thread to handle encoded output
             val executor = Executors.newSingleThreadExecutor()
             executor.execute {
-                encodeH264(width, height)
+                processFrame(width, height)
             }
-
         } catch (e: Exception) {
+            e.printStackTrace()
             Log.e(TAG, "Error initializing MediaCodec", e)
         }
     }
 
-    private fun encodeH264(width : Int, height : Int) {
-        val bufferInfo = MediaCodec.BufferInfo()
+    private fun processFrame(width: Int, height: Int) {
+        Log.d(TAG, "processFrame with size $width x $height")
 
         while (true) {
-            val outputBufferIndex = mediaCodec.dequeueOutputBuffer(bufferInfo, 10000)
-            if (outputBufferIndex >= 0) {
-                // Retrieve the encoded frame from MediaCodec
-                val encodedData: ByteBuffer = mediaCodec.getOutputBuffer(outputBufferIndex) ?: continue
+            val outputBufferInfo = MediaCodec.BufferInfo()
+            var outputBufferId = mediaCodec.dequeueOutputBuffer(outputBufferInfo, 10000)
+            Log.d(TAG, "Buffer media codec Id is $outputBufferId")
+            while (outputBufferId >= 0) {
+                val outputBuffer = mediaCodec.getOutputBuffer(outputBufferId)
+                val encodedData = ByteArray(outputBufferInfo.size)
+                outputBuffer?.get(encodedData)
+                Log.d(TAG, "Data length is ${encodedData.size}")
 
-                if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
-                    // Codec specific data, skip it
-                    mediaCodec.releaseOutputBuffer(outputBufferIndex, false)
-                    continue
-                }
+                Log.d(TAG, "Data are is ${byteArrayToHexString(encodedData)}")
 
-                // Process the H.264 encoded data (e.g., write to file or stream)
-                val h264Data = ByteArray(bufferInfo.size)
-                encodedData.get(h264Data)
+                sendFrame(encodedData, width, height)
 
-                // Here, you get the encoded H.264 ByteArray (h264Data)
-                processH264Data(h264Data, width, height)
-
-                mediaCodec.releaseOutputBuffer(outputBufferIndex, false)
+                mediaCodec.releaseOutputBuffer(outputBufferId, false)
+                outputBufferId = mediaCodec.dequeueOutputBuffer(outputBufferInfo, 0)
             }
+            sleepNano(10000L)
         }
     }
 
-    private fun processH264Data(h264Data: ByteArray, width : Int, height : Int) = runBlocking {
+    private fun sendFrame(h264Data: ByteArray, width: Int, height: Int) = runBlocking {
         // Handle the H.264 data (e.g., save it, stream it, etc.)
-        Log.d(TAG, "Encoded H.264 data of size: ${h264Data.size}")
+        Log.d(TAG, "Encoded H.264 data of size: ${h264Data.size}, width: $width, height: $height")
 
         val mtuSize = 1200 // Adjust this value based on your requirements
-/*
-        // Prepend start code to the NAL unit
-        val startCode = byteArrayOf(0, 0, 0, 1) // 0x00000001
-        val packetData = ByteArray(h264Data.size + startCode.size)
-
-        // Copy start code and the buffer into the packet data
-        System.arraycopy(startCode, 0, packetData, 0, startCode.size)
-        System.arraycopy(h264Data, 0, packetData, startCode.size, h264Data.size)
-*/
         val totalSize = h264Data.size
 
         // For example, you could save the h264Data to a file
@@ -439,7 +425,7 @@ class MainActivity : AppCompatActivity() {
 
                 // Sending frame header
                 // Make frame header data packet
-                var mtu = width + 1 + 1 + 2 + 2
+                val mtu = width + 1 + 1 + 2 + 2
                 val headerBytes = buildHeaderByteArray(mtu, width, height)
                 // Send header
                 // Sending packet
