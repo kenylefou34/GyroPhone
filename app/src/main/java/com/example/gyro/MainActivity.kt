@@ -100,9 +100,11 @@ class MainActivity : AppCompatActivity() {
     private var socket: DatagramSocket? = null
     // private const val IP = "192.168.1.100" // Replace with server IP
     private val IP = "PORT-KEN"
-
     private val PORT = 50000 // Replace with server port
+    private lateinit var sps: ByteArray
+    private lateinit var pps: ByteArray
 
+    /* SENSORS STUFFS */
     private var minValues = floatArrayOf(Float.MAX_VALUE, Float.MAX_VALUE, Float.MAX_VALUE)
     private var maxValues = floatArrayOf(Float.MIN_VALUE, Float.MIN_VALUE, Float.MIN_VALUE)
 
@@ -367,8 +369,8 @@ class MainActivity : AppCompatActivity() {
             mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
             format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            format.setInteger(MediaFormat.KEY_BIT_RATE, 4000000) // Bitrate
-            format.setInteger(MediaFormat.KEY_FRAME_RATE, 15) // FPS
+            format.setInteger(MediaFormat.KEY_BIT_RATE, 1_000_000) // 1Mb Bitrate
+            format.setInteger(MediaFormat.KEY_FRAME_RATE, 25) // FPS
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             // Get the input surface for the encoder (used as the preview output)
@@ -392,27 +394,48 @@ class MainActivity : AppCompatActivity() {
         while (true) {
             val outputBufferInfo = MediaCodec.BufferInfo()
             var outputBufferId = mediaCodec.dequeueOutputBuffer(outputBufferInfo, 10000)
-            Log.d(TAG, "Buffer media codec Id is $outputBufferId")
+            // Log.d(TAG, "Buffer media codec Id is $outputBufferId")
             while (outputBufferId >= 0) {
                 val outputBuffer = mediaCodec.getOutputBuffer(outputBufferId)
                 val encodedData = ByteArray(outputBufferInfo.size)
                 outputBuffer?.get(encodedData)
-                Log.d(TAG, "Data length is ${encodedData.size}")
 
-                Log.d(TAG, "Data are is ${byteArrayToHexString(encodedData)}")
+                // This indicated that the buffer marked as such contains
+                // codec initialization / codec specific data instead of media data.
+                if (outputBufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0) {
+                    // Nothing to do with key frame ?
+                }
+                else if(encodedData.size == 31)
+                {
+                    sps = ByteArray(23)
+                    pps = ByteArray(8)
+                    mapByteArray(encodedData, sps, 0, 0, 23)
+                    mapByteArray(encodedData, pps, 23, 0, 8)
+                }
 
-                sendFrame(encodedData, width, height)
+                if(sps.isNotEmpty() && pps.isNotEmpty()) {
+                    sendFrame(encodedData, width, height)
+                }
 
                 mediaCodec.releaseOutputBuffer(outputBufferId, false)
                 outputBufferId = mediaCodec.dequeueOutputBuffer(outputBufferInfo, 0)
             }
-            sleepNano(10000L)
+            // sleepNano(10000L)
         }
+    }
+
+    private fun sendPacket(data: ByteArray) {
+        // Create a socket
+        if (socket == null) {
+            socket = DatagramSocket()
+        }
+        val packet = DatagramPacket(data, data.size, InetAddress.getByName(IP), PORT)
+        socket?.send(packet)
     }
 
     private fun sendFrame(h264Data: ByteArray, width: Int, height: Int) = runBlocking {
         // Handle the H.264 data (e.g., save it, stream it, etc.)
-        Log.d(TAG, "Encoded H.264 data of size: ${h264Data.size}, width: $width, height: $height")
+        // Log.d(TAG, "Encoded H.264 data of size: ${h264Data.size}, width: $width, height: $height")
 
         val mtuSize = 1200 // Adjust this value based on your requirements
         val totalSize = h264Data.size
@@ -421,23 +444,20 @@ class MainActivity : AppCompatActivity() {
         mutex.withLock {
             try {
                 var sentSize = 0
-                val startTime = System.nanoTime()
+                // val startTime = System.nanoTime()
 
                 // Sending frame header
                 // Make frame header data packet
                 val mtu = width + 1 + 1 + 2 + 2
                 val headerBytes = buildHeaderByteArray(mtu, width, height)
-                // Send header
                 // Sending packet
-                val headerPacket = DatagramPacket(headerBytes, headerBytes.size, InetAddress.getByName(IP), PORT)
-                socket?.send(headerPacket)
+                sendPacket(headerBytes)
+
+                // Send sps and pps
+                sendPacket(sps)
+                sendPacket(pps)
 
                 while (sentSize < totalSize) {
-                    // Create a socket
-                    if (socket == null) {
-                        socket = DatagramSocket()
-                    }
-
                     var datalength = mtuSize
                     if(sentSize + datalength > totalSize) {
                         datalength = totalSize - sentSize
@@ -446,16 +466,15 @@ class MainActivity : AppCompatActivity() {
                     val data = ByteArray(datalength)
                     mapByteArray(h264Data, data, sentSize, 0, datalength)
 
-                    val packet =
-                        DatagramPacket(data, data.size, InetAddress.getByName(IP), PORT)
+                    // Sending packet
+                    sendPacket(data)
                     sentSize += datalength
 
-                    socket?.send(packet)
                 }
 
-                val endTime = System.nanoTime()
-                val duration = (endTime - startTime) / 1_000_000
-                Log.d(TAG, "bindPreviewImage: $duration")
+                // val endTime = System.nanoTime()
+                // val duration = (endTime - startTime) / 1_000_000
+                // Log.d(TAG, "bindPreviewImage: $duration")
             } catch (e: Exception) {
                 e.printStackTrace()
                 textViewError.text = e.message
@@ -480,7 +499,7 @@ class MainActivity : AppCompatActivity() {
                     byteArrayToHexString(lastTwoBytesValue(frameCount)) +
                     byteArrayToHexString(lastTwoBytesValue(ecc))
 
-        Log.d(TAG, "Sending header: $headerHexStr")
+        // Log.d(TAG, "Sending header: $headerHexStr")
         return hexStringToByteArray(headerHexStr)
     }
 
