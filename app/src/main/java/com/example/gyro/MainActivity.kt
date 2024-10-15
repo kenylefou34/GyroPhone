@@ -7,6 +7,9 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
+import android.hardware.camera2.params.StreamConfigurationMap
 import android.os.Bundle
 import android.util.Log
 import android.view.Surface
@@ -15,7 +18,6 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
-import androidx.camera.core.Camera
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.ActivityCompat
@@ -27,11 +29,11 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.util.Size
+import android.view.View
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
+import android.widget.Spinner
 import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
-import androidx.camera.core.resolutionselector.ResolutionSelector
-import androidx.camera.core.resolutionselector.ResolutionStrategy
 import com.example.gyro.databinding.ActivityMainBinding
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
@@ -45,6 +47,8 @@ import java.nio.ByteOrder
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 private const val MAIN_CODE_PERMISSIONS = 100
 private val REQUIRED_PERMISSIONS =
@@ -68,16 +72,35 @@ private fun allPermissionsGranted(context: Context) = REQUIRED_PERMISSIONS.all {
 class MainActivity : AppCompatActivity() {
     /* CAMERA STUFFS */
     private lateinit var viewBinding: ActivityMainBinding
-    private lateinit var cameraExecutor: ExecutorService
 
     private lateinit var mediaCodec: MediaCodec
     private lateinit var inputSurface: Surface
 
     private var frameCount: Int = 0
 
+    private val fps: Int = 20
+    private val frameIntervalMs: Int = 1000 / fps
+
+    private var videoFrameWidth = 1280
+    private var videoFrameHeight = 720
+
+    private lateinit var streamingExecutor: ExecutorService
+    private val atomicStopDecoding = AtomicBoolean(false)
+
+    private val sendFrameMutex = Mutex()
+
     /* SENSORS STUFFS */
     private lateinit var sensorManager: SensorManager
     private lateinit var accelerometerSensor: Sensor
+
+    private var linearAccelerationX = 0F
+    private var linearAccelerationY = 0F
+    private var linearAccelerationZ = 0F
+
+    private lateinit var sensorExecutor: ExecutorService
+
+    /* VIEW STUFFS */
+    private lateinit var textViewError : TextView
 
     private lateinit var viewTextViewMinX : TextView
     private lateinit var viewTextViewMinY : TextView
@@ -91,18 +114,22 @@ class MainActivity : AppCompatActivity() {
     private lateinit var viewTextViewMaxY : TextView
     private lateinit var viewTextViewMaxZ : TextView
 
-    /* VIEW STUFFS */
-    private lateinit var textViewError : TextView
-    private lateinit var textViewInfo : TextView
+    private lateinit var mediaCodecResolutionSpinner : Spinner
+    private lateinit var resolutionOptions: Array<String>
 
     /* SOCKET STUFFS */
-    private var mutex = Mutex() // Mutex lock
-    private var socket: DatagramSocket? = null
-    // private const val IP = "192.168.1.100" // Replace with server IP
-    private val IP = "PORT-KEN"
-    private val PORT = 50000 // Replace with server port
-    private lateinit var sps: ByteArray
-    private lateinit var pps: ByteArray
+    private var socketFrames: DatagramSocket? = null
+    private var socketAccelerometer: DatagramSocket? = null
+
+    private val serverPortVideoData = 50000
+    private val serverPortAccelerometerData = 50002
+
+    private val serverAddressName = "PORT-KEN" // "192.168.1.100"
+
+    private val mtuSize = 1200
+
+    private var sps = ByteArray(0)
+    private var pps = ByteArray(0)
 
     /* SENSORS STUFFS */
     private var minValues = floatArrayOf(Float.MAX_VALUE, Float.MAX_VALUE, Float.MAX_VALUE)
@@ -111,41 +138,9 @@ class MainActivity : AppCompatActivity() {
     private val initialGravity = floatArrayOf(0f, 0f, 0f)
     private var resetGravity = true
 
-    /* METHODS */
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == MAIN_CODE_PERMISSIONS) {
-            when {
-                allPermissionsGranted(applicationContext) -> {
-                    // Permissions granted, proceed with using the sensors
-                    Toast.makeText(
-                        applicationContext,
-                        "Great all permission are granted ! Enjoy...",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-                else -> {
-                    // Permissions denied, handle accordingly (e.g., show a message)
-                    Toast.makeText(
-                        applicationContext,
-                        "Sorry all permission are not granted ! Try again...",
-                        Toast.LENGTH_LONG).show()
-                }
-            }
-        }
-    }
-
     private val sensorListener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent) {
            if (event.sensor.type == Sensor.TYPE_ACCELEROMETER) {
-               val linearAccelerationX = event.values[0] - initialGravity[0]
-               val linearAccelerationY = event.values[1] - initialGravity[1]
-               val linearAccelerationZ = event.values[2] - initialGravity[2]
-
                if (resetGravity) {
                    initialGravity[0] = event.values[0]
                    initialGravity[1] = event.values[1]
@@ -160,10 +155,14 @@ class MainActivity : AppCompatActivity() {
                    viewTextViewMaxZ.text = getString(R.string.zero)
 
                    minValues = floatArrayOf(Float.MAX_VALUE, Float.MAX_VALUE, Float.MAX_VALUE)
-                   maxValues = floatArrayOf(Float.MIN_VALUE, Float.MIN_VALUE, Float.MIN_VALUE)
+                   maxValues = floatArrayOf(-Float.MAX_VALUE, -Float.MAX_VALUE, -Float.MAX_VALUE)
 
                    resetGravity = false
                }
+
+               linearAccelerationX = event.values[0] - initialGravity[0]
+               linearAccelerationY = event.values[1] - initialGravity[1]
+               linearAccelerationZ = event.values[2] - initialGravity[2]
 
                if (linearAccelerationX > maxValues[0]) {
                    maxValues[0] = linearAccelerationX
@@ -204,11 +203,40 @@ class MainActivity : AppCompatActivity() {
                    "Y: %.4f", linearAccelerationY)
                viewTextViewZ.text = String.format(Locale.getDefault(),
                    "Z: %.4f", linearAccelerationZ)
+
            }
         }
 
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
             // TODO("Not yet implemented")
+        }
+    }
+
+    /* METHODS */
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == MAIN_CODE_PERMISSIONS) {
+            when {
+                allPermissionsGranted(applicationContext) -> {
+                    // Permissions granted, proceed with using the sensors
+                    Toast.makeText(
+                        applicationContext,
+                        "Great all permission are granted ! Enjoy...",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+                else -> {
+                    // Permissions denied, handle accordingly (e.g., show a message)
+                    Toast.makeText(
+                        applicationContext,
+                        "Sorry all permission are not granted ! Try again...",
+                        Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 
@@ -219,7 +247,7 @@ class MainActivity : AppCompatActivity() {
             sensorManager.registerListener(
                 sensorListener,
                 accelerometerSensor,
-                25000 /*SensorManager.SENSOR_DELAY_GAME*/
+                10_000 /*SensorManager.SENSOR_DELAY_GAME*/
             )
         }
     }
@@ -231,7 +259,13 @@ class MainActivity : AppCompatActivity() {
             sensorManager.unregisterListener(sensorListener)
         }
 
-        socket?.close()
+        closeData()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+
+        closeData()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -260,7 +294,8 @@ class MainActivity : AppCompatActivity() {
         viewTextViewMaxZ = findViewById(R.id.textViewMaxZ)
 
         textViewError = findViewById(R.id.textViewError)
-        textViewInfo  = findViewById(R.id.textViewInfo)
+
+        mediaCodecResolutionSpinner = findViewById(R.id.mediaCodecResolutionSpinner)
 
         val buttonRazSensors = findViewById<Button>(R.id.buttonRazSensors)
         buttonRazSensors.setOnClickListener {
@@ -292,15 +327,38 @@ class MainActivity : AppCompatActivity() {
             val ipAddressText = findViewById<TextView>(R.id.textViewIpAddress)
             ipAddressText.text = ip
 
-            // Initialize the executor
-            cameraExecutor = Executors.newSingleThreadExecutor()
+            runSensorsAndCamera()
+        }
+    }
 
-            // Permission already granted, proceed with camera usage
-            // Start camera preview with CameraX
-            startCameraPreview()
+    private fun runSensorsAndCamera() {
+        // sensor thread
+        sensorExecutor = Executors.newSingleThreadExecutor()
+        sensorExecutor.execute {
+            processAccelerometerData()
+        }
 
-            // Initialize MediaCodec for H.264 encoding
-            initMediaCodec()
+        // Show camera formats
+        getCameraVideoFormats(applicationContext)
+
+        // Permission already granted, proceed with camera usage
+        // Start camera preview with CameraX
+        startCameraPreview()
+
+        // Initialize MediaCodec for H.264 encoding
+        initMediaCodec()
+    }
+
+    private fun closeData() {
+        socketFrames?.close()
+        socketFrames = null
+
+        socketAccelerometer?.close()
+        socketAccelerometer = null
+
+        if(::mediaCodec.isInitialized) {
+            mediaCodec.stop()
+            mediaCodec.release()
         }
     }
 
@@ -328,12 +386,138 @@ class MainActivity : AppCompatActivity() {
         return null
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        mediaCodec.stop()
-        mediaCodec.release()
+    private fun processAccelerometerData() {
+        while(true) {
+            try {
+                // Create a ByteBuffer to hold the bytes
+                val byteBuffer = ByteBuffer.allocate(Float.SIZE_BYTES * 3)
 
-        cameraExecutor.shutdown()
+                // Append the float values to the ByteBuffer
+                byteBuffer.putFloat(linearAccelerationX)
+                byteBuffer.putFloat(linearAccelerationY)
+                byteBuffer.putFloat(linearAccelerationZ)
+
+                // Convert ByteBuffer to ByteArray
+                val byteArray = byteBuffer.array()
+
+                // Sending packet
+                sendAccelerometerPacket(byteArray, 1_000_000L)
+
+            } catch (e: Exception) {
+                e.printStackTrace()
+                textViewError.text = e.message
+
+                socketAccelerometer?.close()
+                socketAccelerometer = null
+            }
+        }
+    }
+
+    private fun sendAccelerometerPacket(data: ByteArray, sleepFor: Long = 0) {
+        // Create a socket
+        if (socketAccelerometer == null) {
+            socketAccelerometer = DatagramSocket()
+        }
+        val packet = DatagramPacket(data, data.size, InetAddress.getByName(serverAddressName), serverPortAccelerometerData)
+        socketAccelerometer?.send(packet)
+        if(sleepFor > 0) {
+            sleepNano(sleepFor)
+        }
+    }
+
+    private fun getCameraVideoFormats(context: Context) {
+        val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val mutableOptions: MutableList<String> = mutableListOf()
+        mutableOptions.add("1280x720") // default resolution
+
+        try {
+            // Check all cameras
+            val cameraIds = cameraManager.cameraIdList
+
+            for (cameraId in cameraIds) {
+                val cameraCharacteristics = cameraManager.getCameraCharacteristics(cameraId)
+                val facing = cameraCharacteristics.get(CameraCharacteristics.LENS_FACING)
+
+                // Check if camera is the back camera
+                if (facing == CameraCharacteristics.LENS_FACING_BACK) {
+                    Log.d("CameraVideoFormats", "Back camera found: $cameraId")
+                } else {
+                    continue
+                }
+
+                // Get the camera configuration fo streaming (including video formats)
+                val map: StreamConfigurationMap? = cameraCharacteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                map?.let {
+                    // Get sizes for MediaCodec
+                    val codecSizes: Array<Size> = it.getOutputSizes(MediaCodec::class.java)
+                    Log.d("CameraVideoFormats", "Video resolutions (MediaCodec):")
+                    for (size in codecSizes) {
+                        val option = "${size.width}x${size.height}"
+                        Log.d("CameraVideoFormats", option)
+                        mutableOptions.add(option)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("CameraVideoFormats", "Error while retrieving video formats : ${e.message}")
+        }
+
+        resolutionOptions = mutableOptions.toTypedArray()
+        // Create an adaptor for the spinner
+        val adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_item, // Default layout for displaying
+            resolutionOptions
+        )
+        // Specify a layout for the dropdown menu when opening
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        // Bind spinner with adapter
+        mediaCodecResolutionSpinner.adapter = adapter
+        // Manage elements selection
+        mediaCodecResolutionSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>, view: View?, position: Int, id: Long) {
+                val selectedResolution = resolutionOptions[position]
+                setResolution(selectedResolution)
+
+                // Display a toast to validate the selection
+                Toast.makeText(this@MainActivity, "You have chosen resolution: $selectedResolution", Toast.LENGTH_LONG).show()
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>) {
+                // Action to do when nothing is selected
+            }
+        }
+    }
+
+    private fun setResolution(resolution: String) {
+        // Split the string by "x"
+        val dimensions = resolution.split("x")
+        if (dimensions.size != 2) {
+            return
+        }
+
+        // Convert the strings to integers
+        videoFrameWidth = dimensions[0].toInt()
+        videoFrameHeight = dimensions[1].toInt()
+
+        if(::streamingExecutor.isInitialized) {
+            // Shutdown thread to be sure
+            atomicStopDecoding.set(true)
+            streamingExecutor.shutdownNow()
+            while (!streamingExecutor.isShutdown) {
+                streamingExecutor.awaitTermination(1, TimeUnit.SECONDS)
+            }
+        }
+
+        // Reinit media codec with new resolution
+        initMediaCodec()
+
+        atomicStopDecoding.set(false)
+        // Start streaming thread
+        streamingExecutor = Executors.newSingleThreadExecutor()
+        streamingExecutor.execute {
+            processFrame()
+        }
     }
 
     private fun startCameraPreview() {
@@ -363,35 +547,36 @@ class MainActivity : AppCompatActivity() {
 
     private fun initMediaCodec() {
         try {
-            val width = 640
-            val height = 480
+            // Ensure to stop and release media codec before creating a new one
+            if(::mediaCodec.isInitialized) {
+                mediaCodec.stop()
+                mediaCodec.release()
+            }
 
             mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
+            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, videoFrameWidth, videoFrameHeight)
             format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            format.setInteger(MediaFormat.KEY_BIT_RATE, 1_000_000) // 1Mb Bitrate
-            format.setInteger(MediaFormat.KEY_FRAME_RATE, 25) // FPS
+            format.setInteger(MediaFormat.KEY_BIT_RATE, 10_000_000) // 1Mb Bitrate
+            format.setInteger(MediaFormat.KEY_FRAME_RATE, fps) // FPS
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             // Get the input surface for the encoder (used as the preview output)
             inputSurface = mediaCodec.createInputSurface()
             mediaCodec.start()
 
-            // Start a background thread to handle encoded output
-            val executor = Executors.newSingleThreadExecutor()
-            executor.execute {
-                processFrame(width, height)
-            }
         } catch (e: Exception) {
             e.printStackTrace()
             Log.e(TAG, "Error initializing MediaCodec", e)
         }
     }
 
-    private fun processFrame(width: Int, height: Int) {
-        Log.d(TAG, "processFrame with size $width x $height")
+    private fun processFrame() {
+        Log.d(TAG, "processFrame with size ${videoFrameWidth}x${videoFrameHeight}")
 
-        while (true) {
+        while (!atomicStopDecoding.get()) {
+            val startTime = System.nanoTime()
+            var durationMs = 0
+
             val outputBufferInfo = MediaCodec.BufferInfo()
             var outputBufferId = mediaCodec.dequeueOutputBuffer(outputBufferInfo, 10000)
             // Log.d(TAG, "Buffer media codec Id is $outputBufferId")
@@ -405,57 +590,71 @@ class MainActivity : AppCompatActivity() {
                 if (outputBufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0) {
                     // Nothing to do with key frame ?
                 }
-                else if(encodedData.size == 31)
+                else if(encodedData.size <= 32)
                 {
-                    sps = ByteArray(23)
-                    pps = ByteArray(8)
-                    mapByteArray(encodedData, sps, 0, 0, 23)
-                    mapByteArray(encodedData, pps, 23, 0, 8)
+                    val target = byteArrayOf(0, 0, 0, 1) // LUN
+                    val positions = mutableListOf<Int>()
+                    for (i in encodedData.indices) {
+                        if (i + target.size <= encodedData.size && encodedData.sliceArray(i until i + target.size).contentEquals(target)) {
+                            positions.add(i)
+                        }
+                    }
+
+                    sps = ByteArray(positions[1])
+                    mapByteArray(encodedData, sps, 0, 0, sps.size)
+                    pps = ByteArray(encodedData.size - positions[1])
+                    mapByteArray(encodedData, pps, positions[1], 0, pps.size)
                 }
 
                 if(sps.isNotEmpty() && pps.isNotEmpty()) {
-                    sendFrame(encodedData, width, height)
+                    sendFrame(encodedData)
                 }
 
                 mediaCodec.releaseOutputBuffer(outputBufferId, false)
                 outputBufferId = mediaCodec.dequeueOutputBuffer(outputBufferInfo, 0)
             }
-            // sleepNano(10000L)
+
+            // Wait for end of frame with respect to FPS (frame rate)
+            do {
+                val endTime = System.nanoTime()
+                durationMs = ((endTime - startTime) / 1_000_000).toInt()
+            } while (durationMs < frameIntervalMs && !atomicStopDecoding.get())
+
+            Log.d(TAG, "bindPreviewImage: $durationMs")
         }
     }
 
-    private fun sendPacket(data: ByteArray) {
+    private fun sendFramesPacket(data: ByteArray, sleepFor: Long = 0) {
         // Create a socket
-        if (socket == null) {
-            socket = DatagramSocket()
+        if (socketFrames == null) {
+            socketFrames = DatagramSocket()
         }
-        val packet = DatagramPacket(data, data.size, InetAddress.getByName(IP), PORT)
-        socket?.send(packet)
+        val packet = DatagramPacket(data, data.size, InetAddress.getByName(serverAddressName), serverPortVideoData)
+        socketFrames?.send(packet)
+        if(sleepFor > 0) {
+            sleepNano(sleepFor)
+        }
     }
 
-    private fun sendFrame(h264Data: ByteArray, width: Int, height: Int) = runBlocking {
+    private fun sendFrame(h264Data: ByteArray) = runBlocking {
         // Handle the H.264 data (e.g., save it, stream it, etc.)
         // Log.d(TAG, "Encoded H.264 data of size: ${h264Data.size}, width: $width, height: $height")
-
-        val mtuSize = 1200 // Adjust this value based on your requirements
         val totalSize = h264Data.size
 
         // For example, you could save the h264Data to a file
-        mutex.withLock {
+        sendFrameMutex.withLock {
             try {
                 var sentSize = 0
-                // val startTime = System.nanoTime()
 
                 // Sending frame header
                 // Make frame header data packet
-                val mtu = width + 1 + 1 + 2 + 2
-                val headerBytes = buildHeaderByteArray(mtu, width, height)
+                val headerBytes = buildHeaderByteArray(videoFrameWidth, videoFrameHeight)
                 // Sending packet
-                sendPacket(headerBytes)
+                sendFramesPacket(headerBytes)
 
                 // Send sps and pps
-                sendPacket(sps)
-                sendPacket(pps)
+                sendFramesPacket(sps)
+                sendFramesPacket(pps)
 
                 while (sentSize < totalSize) {
                     var datalength = mtuSize
@@ -467,25 +666,21 @@ class MainActivity : AppCompatActivity() {
                     mapByteArray(h264Data, data, sentSize, 0, datalength)
 
                     // Sending packet
-                    sendPacket(data)
+                    sendFramesPacket(data)
                     sentSize += datalength
 
                 }
-
-                // val endTime = System.nanoTime()
-                // val duration = (endTime - startTime) / 1_000_000
-                // Log.d(TAG, "bindPreviewImage: $duration")
             } catch (e: Exception) {
                 e.printStackTrace()
                 textViewError.text = e.message
 
-                socket?.close()
-                socket = null
+                socketFrames?.close()
+                socketFrames = null
             }
         }
     }
 
-    private fun buildHeaderByteArray(mtu: Int, width: Int, height: Int) : ByteArray {
+    private fun buildHeaderByteArray(width: Int, height: Int) : ByteArray {
         // Frame width/height are limited to 65535x65535 pixels in header encoding
         val beginFrameCode = 184 // 0xB8
         frameCount = if (frameCount > 0xffff) 0 else frameCount + 1

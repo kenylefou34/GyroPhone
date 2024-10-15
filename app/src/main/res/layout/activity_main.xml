@@ -6,21 +6,23 @@
     android:layout_height="match_parent"
     tools:context=".MainActivity">
 
-    <androidx.camera.view.PreviewView
-        android:id="@+id/view_camera"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent" />
-
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="horizontal">
 
         <LinearLayout
-            android:layout_width="wrap_content"
+            android:layout_width="fill_parent"
             android:layout_height="fill_parent"
             android:gravity="end"
             android:orientation="vertical">
+
+            <Spinner
+                android:id="@+id/mediaCodecResolutionSpinner"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                />
 
             <Button
                 android:id="@+id/buttonRazSensors"
@@ -33,6 +35,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_margin="8dp"
+                android:layout_gravity="center"
                 android:orientation="horizontal">
 
                 <TextView
@@ -164,28 +167,6 @@
                     android:textAlignment="textEnd" />
             </LinearLayout>
 
-            <Button
-                android:id="@+id/switchCamera"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="@string/switch_camera" />
-
-            <Button
-                android:id="@+id/enableCameraDisplay"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="@string/display_camera" />
-
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="fill_parent"
-            android:layout_height="fill_parent"
-            android:layout_margin="8dp"
-            android:orientation="vertical">
-
             <TextView
                 android:id="@+id/textViewIpAddress"
                 android:layout_width="fill_parent"
@@ -197,15 +178,6 @@
 
             <TextView
                 android:id="@+id/textViewError"
-                android:layout_width="fill_parent"
-                android:layout_height="wrap_content"
-                android:layout_margin="4dp"
-                android:ems="6"
-                android:text="@string/empty"
-                android:textAlignment="textStart" />
-
-            <TextView
-                android:id="@+id/textViewInfo"
                 android:layout_width="fill_parent"
                 android:layout_height="wrap_content"
                 android:layout_margin="4dp"
