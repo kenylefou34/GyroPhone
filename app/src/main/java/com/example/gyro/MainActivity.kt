@@ -49,6 +49,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.experimental.xor
 
 private const val MAIN_CODE_PERMISSIONS = 100
 private val REQUIRED_PERMISSIONS =
@@ -78,11 +79,11 @@ class MainActivity : AppCompatActivity() {
 
     private var frameCount: Int = 0
 
-    private val fps: Int = 20
+    private val fps: Int = 24
     private val frameIntervalMs: Int = 1000 / fps
 
-    private var videoFrameWidth = 1280
-    private var videoFrameHeight = 720
+    private var videoFrameWidth = 640
+    private var videoFrameHeight = 480
 
     private lateinit var streamingExecutor: ExecutorService
     private val atomicStopDecoding = AtomicBoolean(false)
@@ -96,8 +97,6 @@ class MainActivity : AppCompatActivity() {
     private var linearAccelerationX = 0F
     private var linearAccelerationY = 0F
     private var linearAccelerationZ = 0F
-
-    private lateinit var sensorExecutor: ExecutorService
 
     /* VIEW STUFFS */
     private lateinit var textViewError : TextView
@@ -119,10 +118,8 @@ class MainActivity : AppCompatActivity() {
 
     /* SOCKET STUFFS */
     private var socketFrames: DatagramSocket? = null
-    private var socketAccelerometer: DatagramSocket? = null
 
     private val serverPortVideoData = 50000
-    private val serverPortAccelerometerData = 50002
 
     private val serverAddressName = "PORT-KEN" // "192.168.1.100"
 
@@ -332,12 +329,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun runSensorsAndCamera() {
-        // sensor thread
-        sensorExecutor = Executors.newSingleThreadExecutor()
-        sensorExecutor.execute {
-            processAccelerometerData()
-        }
-
         // Show camera formats
         getCameraVideoFormats(applicationContext)
 
@@ -352,9 +343,6 @@ class MainActivity : AppCompatActivity() {
     private fun closeData() {
         socketFrames?.close()
         socketFrames = null
-
-        socketAccelerometer?.close()
-        socketAccelerometer = null
 
         if(::mediaCodec.isInitialized) {
             mediaCodec.stop()
@@ -386,49 +374,10 @@ class MainActivity : AppCompatActivity() {
         return null
     }
 
-    private fun processAccelerometerData() {
-        while(true) {
-            try {
-                // Create a ByteBuffer to hold the bytes
-                val byteBuffer = ByteBuffer.allocate(Float.SIZE_BYTES * 3)
-
-                // Append the float values to the ByteBuffer
-                byteBuffer.putFloat(linearAccelerationX)
-                byteBuffer.putFloat(linearAccelerationY)
-                byteBuffer.putFloat(linearAccelerationZ)
-
-                // Convert ByteBuffer to ByteArray
-                val byteArray = byteBuffer.array()
-
-                // Sending packet
-                sendAccelerometerPacket(byteArray, 1_000_000L)
-
-            } catch (e: Exception) {
-                e.printStackTrace()
-                textViewError.text = e.message
-
-                socketAccelerometer?.close()
-                socketAccelerometer = null
-            }
-        }
-    }
-
-    private fun sendAccelerometerPacket(data: ByteArray, sleepFor: Long = 0) {
-        // Create a socket
-        if (socketAccelerometer == null) {
-            socketAccelerometer = DatagramSocket()
-        }
-        val packet = DatagramPacket(data, data.size, InetAddress.getByName(serverAddressName), serverPortAccelerometerData)
-        socketAccelerometer?.send(packet)
-        if(sleepFor > 0) {
-            sleepNano(sleepFor)
-        }
-    }
-
     private fun getCameraVideoFormats(context: Context) {
         val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val mutableOptions: MutableList<String> = mutableListOf()
-        mutableOptions.add("1280x720") // default resolution
+        mutableOptions.add("640x480") // default resolution
 
         try {
             // Check all cameras
@@ -553,12 +502,23 @@ class MainActivity : AppCompatActivity() {
                 mediaCodec.release()
             }
 
+            val baseBitrate = when (videoFrameHeight) {
+                480 -> 1_000_000..2_000_000
+                720 -> 2_500_000..5_000_000
+                1080 -> 5_000_000..10_000_000
+                else -> 20_000_000..50_000_000
+            }.average().toInt()
+
+            val adjustedBitrate = (baseBitrate * (fps / 30.0)).toInt()
+
+            Log.d(TAG, "With ${fps}FPS and a resolution of ${videoFrameHeight}p, the bitrate is $adjustedBitrate")
+
             mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, videoFrameWidth, videoFrameHeight)
             format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            format.setInteger(MediaFormat.KEY_BIT_RATE, 10_000_000) // 1Mb Bitrate
+            format.setInteger(MediaFormat.KEY_BIT_RATE, adjustedBitrate) // Adjusted (computed) bitrate
             format.setInteger(MediaFormat.KEY_FRAME_RATE, fps) // FPS
-            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 10)
             mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             // Get the input surface for the encoder (used as the preview output)
             inputSurface = mediaCodec.createInputSurface()
@@ -575,7 +535,6 @@ class MainActivity : AppCompatActivity() {
 
         while (!atomicStopDecoding.get()) {
             val startTime = System.nanoTime()
-            var durationMs = 0
 
             val outputBufferInfo = MediaCodec.BufferInfo()
             var outputBufferId = mediaCodec.dequeueOutputBuffer(outputBufferInfo, 10000)
@@ -587,11 +546,12 @@ class MainActivity : AppCompatActivity() {
 
                 // This indicated that the buffer marked as such contains
                 // codec initialization / codec specific data instead of media data.
-                if (outputBufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0) {
-                    // Nothing to do with key frame ?
-                }
-                else if(encodedData.size <= 32)
+                // if (outputBufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0) {
+
+                // This test is used to get SPS and PPS infos
+                if(encodedData.size <= 32)
                 {
+                    Log.i(TAG, "Getting SPS and PPS Infos")
                     val target = byteArrayOf(0, 0, 0, 1) // LUN
                     val positions = mutableListOf<Int>()
                     for (i in encodedData.indices) {
@@ -599,13 +559,13 @@ class MainActivity : AppCompatActivity() {
                             positions.add(i)
                         }
                     }
-
                     sps = ByteArray(positions[1])
                     mapByteArray(encodedData, sps, 0, 0, sps.size)
                     pps = ByteArray(encodedData.size - positions[1])
                     mapByteArray(encodedData, pps, positions[1], 0, pps.size)
                 }
 
+                // Send frame only when SPS and PPS have been mapped
                 if(sps.isNotEmpty() && pps.isNotEmpty()) {
                     sendFrame(encodedData)
                 }
@@ -615,12 +575,11 @@ class MainActivity : AppCompatActivity() {
             }
 
             // Wait for end of frame with respect to FPS (frame rate)
+            var durationMs = 0
             do {
                 val endTime = System.nanoTime()
                 durationMs = ((endTime - startTime) / 1_000_000).toInt()
             } while (durationMs < frameIntervalMs && !atomicStopDecoding.get())
-
-            Log.d(TAG, "bindPreviewImage: $durationMs")
         }
     }
 
@@ -648,7 +607,7 @@ class MainActivity : AppCompatActivity() {
 
                 // Sending frame header
                 // Make frame header data packet
-                val headerBytes = buildHeaderByteArray(videoFrameWidth, videoFrameHeight)
+                val headerBytes = buildHeaderByteArray(videoFrameWidth, videoFrameHeight, totalSize)
                 // Sending packet
                 sendFramesPacket(headerBytes)
 
@@ -656,6 +615,19 @@ class MainActivity : AppCompatActivity() {
                 sendFramesPacket(sps)
                 sendFramesPacket(pps)
 
+                // Sending accelerometer data
+                // Create a ByteBuffer to hold the bytes
+                val byteBuffer = ByteBuffer.allocate(Float.SIZE_BYTES * 3)
+                // Append the float values to the ByteBuffer
+                byteBuffer.putFloat(linearAccelerationX)
+                byteBuffer.putFloat(linearAccelerationY)
+                byteBuffer.putFloat(linearAccelerationZ)
+                // Convert ByteBuffer to ByteArray
+                val byteArray = byteBuffer.array()
+                sendFramesPacket(byteArray);
+
+                // Sending H.264 data
+                val mtuSize = 1280
                 while (sentSize < totalSize) {
                     var datalength = mtuSize
                     if(sentSize + datalength > totalSize) {
@@ -680,21 +652,61 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun buildHeaderByteArray(width: Int, height: Int) : ByteArray {
+    private fun calculateECC(
+        code: Int,
+        frameEncoding: Int,
+        width: Int,
+        height: Int,
+        frameId: Int,
+        encodedTotalSize: Int
+    ): Byte {
+        var ecc = code.toByte()
+
+        // XOR each byte of the fields to accumulate parity
+        ecc = ecc xor (frameEncoding and 0xFF).toByte()
+        ecc = ecc xor ((frameEncoding shr 8) and 0xFF).toByte()
+        ecc = ecc xor ((frameEncoding shr 16) and 0xFF).toByte()
+        ecc = ecc xor ((frameEncoding shr 24) and 0xFF).toByte()
+
+        ecc = ecc xor (width and 0xFF).toByte()
+        ecc = ecc xor ((width shr 8) and 0xFF).toByte()
+        ecc = ecc xor ((width shr 16) and 0xFF).toByte()
+        ecc = ecc xor ((width shr 24) and 0xFF).toByte()
+
+        ecc = ecc xor (height and 0xFF).toByte()
+        ecc = ecc xor ((height shr 8) and 0xFF).toByte()
+        ecc = ecc xor ((height shr 16) and 0xFF).toByte()
+        ecc = ecc xor ((height shr 24) and 0xFF).toByte()
+
+        ecc = ecc xor (frameId and 0xFF).toByte()
+        ecc = ecc xor ((frameId shr 8) and 0xFF).toByte()
+        ecc = ecc xor ((frameId shr 16) and 0xFF).toByte()
+        ecc = ecc xor ((frameId shr 24) and 0xFF).toByte()
+
+        ecc = ecc xor (encodedTotalSize and 0xFF).toByte()
+        ecc = ecc xor ((encodedTotalSize shr 8) and 0xFF).toByte()
+        ecc = ecc xor ((encodedTotalSize shr 16) and 0xFF).toByte()
+        ecc = ecc xor ((encodedTotalSize shr 24) and 0xFF).toByte()
+
+        return ecc
+    }
+
+    private fun buildHeaderByteArray(width: Int, height: Int, totalSize: Int) : ByteArray {
         // Frame width/height are limited to 65535x65535 pixels in header encoding
         val beginFrameCode = 184 // 0xB8
         frameCount = if (frameCount > 0xffff) 0 else frameCount + 1
         val h264Code = 128 // 0x80
-        val ecc = (beginFrameCode * beginFrameCode + h264Code) / (width * 3 - height ) * 100
+        val ecc = calculateECC(h264Code, h264Code, width, height, frameCount, totalSize)
         val headerHexStr =
             byteArrayToHexString(lastByteValue(beginFrameCode)) +
                     byteArrayToHexString(lastTwoBytesValue(h264Code)) +
                     byteArrayToHexString(lastTwoBytesValue(width)) +
                     byteArrayToHexString(lastTwoBytesValue(height)) +
                     byteArrayToHexString(lastTwoBytesValue(frameCount)) +
-                    byteArrayToHexString(lastTwoBytesValue(ecc))
+                    byteArrayToHexString(intToBytesBigEndian(totalSize)) +
+                    byteArrayToHexString(lastByteValue(ecc.toInt()))
 
-        // Log.d(TAG, "Sending header: $headerHexStr")
+        Log.d(TAG, "Sending header: $headerHexStr")
         return hexStringToByteArray(headerHexStr)
     }
 
