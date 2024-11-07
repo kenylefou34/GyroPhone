@@ -696,13 +696,16 @@ class MainActivity : AppCompatActivity() {
         val beginFrameCode = 184 // 0xB8
         frameCount = if (frameCount > 0xffff) 0 else frameCount + 1
         val h264Code = 128 // 0x80
-        val ecc = calculateECC(h264Code, h264Code, width, height, frameCount, totalSize)
+        val ecc = calculateECC(beginFrameCode, h264Code, width, height, frameCount, totalSize)
+        // val ecc = calculateECC(beginFrameCode, h264Code, width, height, 666, 1024)
         val headerHexStr =
             byteArrayToHexString(lastByteValue(beginFrameCode)) +
                     byteArrayToHexString(lastTwoBytesValue(h264Code)) +
                     byteArrayToHexString(lastTwoBytesValue(width)) +
                     byteArrayToHexString(lastTwoBytesValue(height)) +
+                    // byteArrayToHexString(lastTwoBytesValue(666)) +
                     byteArrayToHexString(lastTwoBytesValue(frameCount)) +
+                    // byteArrayToHexString(intToBytesBigEndian(1024)) +
                     byteArrayToHexString(intToBytesBigEndian(totalSize)) +
                     byteArrayToHexString(lastByteValue(ecc.toInt()))
 
