@@ -45,6 +45,7 @@ import java.net.NetworkInterface
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
+import java.util.TreeMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -82,8 +83,8 @@ class MainActivity : AppCompatActivity() {
     private val fps: Int = 24
     private val frameIntervalMs: Int = 1000 / fps
 
-    private var videoFrameWidth = 640
-    private var videoFrameHeight = 480
+    private var videoFrameWidth = 1680 // 640 800 1024 1680 1280 1920
+    private var videoFrameHeight = 720 // 480 600 768  720  960  864
 
     private lateinit var streamingExecutor: ExecutorService
     private val atomicStopDecoding = AtomicBoolean(false)
@@ -377,7 +378,7 @@ class MainActivity : AppCompatActivity() {
     private fun getCameraVideoFormats(context: Context) {
         val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val mutableOptions: MutableList<String> = mutableListOf()
-        mutableOptions.add("640x480") // default resolution
+        mutableOptions.add("${videoFrameWidth}x${videoFrameHeight}") // default resolution
 
         try {
             // Check all cameras
@@ -452,10 +453,7 @@ class MainActivity : AppCompatActivity() {
         if(::streamingExecutor.isInitialized) {
             // Shutdown thread to be sure
             atomicStopDecoding.set(true)
-            streamingExecutor.shutdownNow()
-            while (!streamingExecutor.isShutdown) {
-                streamingExecutor.awaitTermination(1, TimeUnit.SECONDS)
-            }
+            stopStreamingGracefully()
         }
 
         // Reinit media codec with new resolution
@@ -466,6 +464,19 @@ class MainActivity : AppCompatActivity() {
         streamingExecutor = Executors.newSingleThreadExecutor()
         streamingExecutor.execute {
             processFrame()
+        }
+    }
+
+    // Terminate the thread gracefully
+    private fun stopStreamingGracefully() {
+        streamingExecutor.shutdown()
+        try {
+            if (!streamingExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                streamingExecutor.shutdownNow() // Force shutdown if not terminated in time
+            }
+        } catch (ex: InterruptedException) {
+            streamingExecutor.shutdownNow()
+            Thread.currentThread().interrupt() // Restore interrupted status
         }
     }
 
@@ -498,18 +509,21 @@ class MainActivity : AppCompatActivity() {
         try {
             // Ensure to stop and release media codec before creating a new one
             if(::mediaCodec.isInitialized) {
+                mediaCodec.flush()
                 mediaCodec.stop()
                 mediaCodec.release()
             }
 
-            val baseBitrate = when (videoFrameHeight) {
-                480 -> 1_000_000..2_000_000
-                720 -> 2_500_000..5_000_000
-                1080 -> 5_000_000..10_000_000
-                else -> 20_000_000..50_000_000
-            }.average().toInt()
-
-            val adjustedBitrate = (baseBitrate * (fps / 30.0)).toInt()
+            // Define a TreeMap with video frame height as keys and bitrates as values
+            val bitrateMap = TreeMap<Int, Int>().apply {
+                put(480, 1_500_000)
+                put(720, 4_000_000)
+                put(1080, 10_000_000)
+                put(Int.MAX_VALUE, 50_000_000) // Default for values above 1080
+            }
+            // Find the smallest key that is greater than or equal to `height`
+            val nearestHeight = bitrateMap.ceilingKey(videoFrameHeight)
+            val adjustedBitrate = bitrateMap[nearestHeight!!] ?: error("Bitrate not found")
 
             Log.d(TAG, "With ${fps}FPS and a resolution of ${videoFrameHeight}p, the bitrate is $adjustedBitrate")
 
@@ -581,6 +595,7 @@ class MainActivity : AppCompatActivity() {
                 durationMs = ((endTime - startTime) / 1_000_000).toInt()
             } while (durationMs < frameIntervalMs && !atomicStopDecoding.get())
         }
+        Log.d(TAG, "processFrame terminated")
     }
 
     private fun sendFramesPacket(data: ByteArray, sleepFor: Long = 0) {
@@ -697,19 +712,16 @@ class MainActivity : AppCompatActivity() {
         frameCount = if (frameCount > 0xffff) 0 else frameCount + 1
         val h264Code = 128 // 0x80
         val ecc = calculateECC(beginFrameCode, h264Code, width, height, frameCount, totalSize)
-        // val ecc = calculateECC(beginFrameCode, h264Code, width, height, 666, 1024)
         val headerHexStr =
             byteArrayToHexString(lastByteValue(beginFrameCode)) +
                     byteArrayToHexString(lastTwoBytesValue(h264Code)) +
                     byteArrayToHexString(lastTwoBytesValue(width)) +
                     byteArrayToHexString(lastTwoBytesValue(height)) +
-                    // byteArrayToHexString(lastTwoBytesValue(666)) +
                     byteArrayToHexString(lastTwoBytesValue(frameCount)) +
-                    // byteArrayToHexString(intToBytesBigEndian(1024)) +
                     byteArrayToHexString(intToBytesBigEndian(totalSize)) +
                     byteArrayToHexString(lastByteValue(ecc.toInt()))
 
-        Log.d(TAG, "Sending header: $headerHexStr")
+        // Log.d(TAG, "Sending header: $headerHexStr")
         return hexStringToByteArray(headerHexStr)
     }
 
